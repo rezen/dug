@@ -1,0 +1,22 @@
+# Run with prek (https://github.com/j178/prek): `prek install`, or `prek run --all-files`.
+repos:
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: >-
+          sh -c 'out=$(gofmt -l "$@"); [ -z "$out" ] || { echo "$out"; echo "unformatted; run just fmt"; exit 1; }' --
+        language: system
+        types: [go]
+      - id: just-fmt
+        name: just --fmt --check
+        entry: just --fmt --check
+        language: system
+        files: ^justfile$
+        pass_filenames: false
+      - id: go-vet
+        name: just vet
+        entry: just vet
+        language: system
+        types: [go]
+        pass_filenames: false

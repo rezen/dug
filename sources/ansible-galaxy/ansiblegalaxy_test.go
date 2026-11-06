@@ -40,8 +40,6 @@ type fakeCollection struct {
 	missingDetail   bool
 }
 
-func (c fakeCollection) fqcn() string { return c.namespace + "." + c.name }
-
 // fakeGalaxy serves the shapes recorded from galaxy.ansible.com under /api/.
 type fakeGalaxy struct {
 	collections []fakeCollection

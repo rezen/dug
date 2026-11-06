@@ -113,7 +113,8 @@ func TestHTTPClientConfigurationIsIsolated(t *testing.T) {
 			t.Fatal("custom settings changed another client's transport")
 		}
 	}
-	if DefaultDugHttpClient() != DefaultDugHttpClient() {
+	first, second := DefaultDugHttpClient(), DefaultDugHttpClient()
+	if first != second {
 		t.Fatal("fallback requests must share a connection pool")
 	}
 }
