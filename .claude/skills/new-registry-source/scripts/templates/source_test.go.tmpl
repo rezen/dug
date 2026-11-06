@@ -1,0 +1,88 @@
+package __PKG__
+
+import (
+	"context"
+	"errors"
+	"maps"
+	"strings"
+	"testing"
+
+	"github.com/rezen/dug/sdk/registry"
+)
+
+func TestOptionValidation(t *testing.T) {
+	factory := PluginFactory(nil)
+	for _, options := range []map[string]string{{"unknown": "x"}, {"names": "../bad"}, {"names": ""}, {"version_depth": "0"}} {
+		if _, err := factory(options); err == nil {
+			t.Errorf("accepted %v", options)
+		}
+	}
+	for _, options := range []map[string]string{nil, {"names": "example"}, {"version_depth": "unlimited"}} {
+		if _, err := factory(options); err != nil {
+			t.Errorf("rejected %v: %v", options, err)
+		}
+	}
+}
+
+func TestResolveRejectsTamperedReferences(t *testing.T) {
+	s := &Source{}
+	good := registry.Reference{Registry: Identity, Name: "example", Version: "1", Attributes: map[string]string{
+		"download_url": "https://" + DefaultDownloadHosts[0] + "/example-1.zip",
+		"sha256":       "sha256:" + strings.Repeat("0", 64),
+		"size":         "1",
+	}}
+	if _, err := s.Resolve(context.Background(), good); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*registry.Reference){
+		"off-host URL":     func(r *registry.Reference) { r.Attributes["download_url"] = "http://169.254.169.254/latest/meta-data/" },
+		"bad digest":       func(r *registry.Reference) { r.Attributes["sha256"] = "sha256:bad" },
+		"uppercase digest": func(r *registry.Reference) { r.Attributes["sha256"] = "sha256:" + strings.Repeat("A", 64) },
+		"zero size":        func(r *registry.Reference) { r.Attributes["size"] = "0" },
+		"other registry":   func(r *registry.Reference) { r.Registry = "other" },
+		"path in name":     func(r *registry.Reference) { r.Name = "../example" },
+	} {
+		ref := good
+		ref.Attributes = maps.Clone(good.Attributes)
+		mutate(&ref)
+		if _, err := s.Resolve(context.Background(), ref); err == nil {
+			t.Errorf("%s: resolved a tampered reference", name)
+		}
+	}
+}
+
+func TestPaginationStaysOnOrigin(t *testing.T) {
+	s := &Source{Endpoint: "https://registry.example/api/"}
+	seen := map[string]bool{}
+	if _, err := s.next("https://registry.example/api/items/?page=2", seen); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.next("https://registry.example/api/items/?page=2", seen); err == nil {
+		t.Fatal("accepted a pagination cycle")
+	}
+	for _, raw := range []string{"https://other.example/api/items/", "https://registry.example/other/", "/items/?page=3"} {
+		if _, err := s.next(raw, map[string]bool{}); err == nil {
+			t.Errorf("accepted %q", raw)
+		}
+	}
+}
+
+func TestCancellationStopsDiscovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s := &Source{Names: []string{"example"}, Attempts: 1}
+	if err := s.Discover(ctx, func(registry.Reference) error { return nil }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
+	}
+}
+
+func TestDiscoverPinsVersionsAndDownloads(t *testing.T) {
+	// TODO(__NAME__): serve the catalog, item, version and archive routes from
+	// an httptest.Server using trimmed real responses, then for each depth
+	// ("1", "2", "unlimited", a date, a future date) check the emitted
+	// versions, each reference's Facts field by field (and ref.Facts.Validate()),
+	// its Metadata, that Resolve then Open returns the bytes without another
+	// metadata request, and that a tampered digest fails Resolve. See
+	// sources/firefox/firefox_test.go.
+	t.Skip("TODO(__NAME__): implement against a fake server")
+}

@@ -1,0 +1,15 @@
+schema_version: "1.1"
+name: open-vsx
+expected_outcome: |
+  A new independent module sources/openvsx with a dug-openvsx executable that
+  walks the Open VSX search API (offset pagination, totalSize checked), emits
+  one reference per selected version with the VSIX download URL on
+  open-vsx.org and the SHA-256 from the per-version digest file, supports
+  version_depth through the versions endpoint, records downloadCount as
+  downloads, averageRating normalized to a 0-100 rating with the raw scale
+  kept, reviewCount as num_ratings and timestamp as updated_at, rejects
+  unknown options, and has offline tests against an httptest fake. It is
+  wired into go.work, scripts/build.sh, scripts/check.sh,
+  scripts/check-boundaries.sh, the justfile plugin recipe, the host help text,
+  sources/README.md, docs/plugins.md, docs/monorepo.md and README.md, and
+  `just check` and `just build` pass.

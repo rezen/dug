@@ -1,0 +1,14 @@
+package __PKG__
+
+import "github.com/rezen/dug/sdk/registry"
+
+// Provider describes the catalogs implemented by this adapter.
+// TODO(__NAME__): Kind names the catalog within the provider (extensions,
+// addons, plugins, packages, repositories). A provider serving several
+// catalogs declares one Definition per registry identity, as wordpress does.
+func Provider() registry.Provider {
+	return registry.Provider{
+		ID:         Identity,
+		Registries: []registry.Definition{{ID: Identity, Kind: "packages"}},
+	}
+}

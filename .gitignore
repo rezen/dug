@@ -1,0 +1,12 @@
+__pycache__/
+**.pyc
+/dug
+/bin/
+*.test
+coverage.out
+.env
+
+.local/
+/data/
+/logs/
+/dug.yaml

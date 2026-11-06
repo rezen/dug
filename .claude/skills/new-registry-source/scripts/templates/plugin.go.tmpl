@@ -1,0 +1,42 @@
+package __PKG__
+
+import (
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/rezen/dug/sdk/plugin"
+	"github.com/rezen/dug/sdk/registry"
+)
+
+// PluginFactory validates query options for every Connect call. Options are
+// persisted in inventories, so they carry selection and tuning, never
+// credentials; anything secret is read from the environment in
+// cmd/dug-__NAME__ and passed in here as a parameter.
+func PluginFactory(client *http.Client) plugin.Factory {
+	return func(options map[string]string) (registry.Registry, error) {
+		s := &Source{Client: client, Attempts: 4}
+		for key, value := range options {
+			switch key {
+			case "names": // TODO(__NAME__): the registry's own term (slugs, ids, repos)
+				for _, name := range strings.Split(value, ",") {
+					name = strings.TrimSpace(name)
+					if err := validName(name); err != nil {
+						return nil, err
+					}
+					s.Names = append(s.Names, name)
+				}
+			case "version_depth":
+				// A registry without version history returns an error here
+				// instead: "__TITLE__ publishes no version history; version_depth is not supported".
+				if _, err := registry.ParseVersionDepth(value); err != nil {
+					return nil, err
+				}
+				s.VersionDepth = value
+			default:
+				return nil, fmt.Errorf("unknown __TITLE__ option %q (supported: names, version_depth)", key)
+			}
+		}
+		return s, nil
+	}
+}

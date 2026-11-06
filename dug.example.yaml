@@ -1,0 +1,17 @@
+# Copy to dug.yaml (read from the working directory) or pass --config PATH.
+# Keys are flag names. Precedence: flag default < environment < this file < flags.
+
+bucket: artifact-corpus
+# endpoint: http://localhost:9000   # omit for AWS S3
+prefix: dug
+concurrency: 8
+attempts: 3
+
+registries:
+  wordpress:
+    options:
+      slugs: [akismet, wordpress-seo]
+  chrome:
+    plugin-url: http://127.0.0.1:7782
+    options:
+      ids: [EXTENSION_ID]

@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package dug.registry.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/rezen/dug/sdk/gen/dug/registry/v1;registryv1";
+
+// Each registry plugin is a standalone Connect service. The host owns storage,
+// hashing, retries and transfer concurrency; the plugin owns upstream access.
+service RegistryService {
+  rpc Info(InfoRequest) returns (InfoResponse);
+  rpc Discover(DiscoverRequest) returns (stream DiscoverResponse);
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+  rpc Download(DownloadRequest) returns (stream DownloadResponse);
+}
+
+message InfoRequest {}
+message InfoResponse {
+  string registry = 1;
+  uint32 protocol_version = 2;
+  // Optional for older plugins. Describes the provider's catalogs; this
+  // endpoint serves only the registry named above.
+  Provider provider = 3;
+}
+
+message Provider {
+  string id = 1;
+  repeated RegistryDefinition registries = 2;
+}
+
+message RegistryDefinition {
+  string id = 1;   // stable, globally unique artifact/storage identity
+  string kind = 2; // catalog name within the provider, e.g. plugins or themes
+}
+
+message Reference {
+  string registry = 1;
+  string namespace = 2;
+  string name = 3;
+  string version = 4;
+  // Persisted provenance. Never include credentials here.
+  map<string, string> attributes = 5;
+  // Mutable registry-specific listing facts, excluded from artifact identity.
+  map<string, string> metadata = 6;
+  // Typed listing facts with the same meaning in every registry, excluded
+  // from artifact identity. Unset means the registry does not publish them.
+  Facts facts = 7;
+  // Keywords, topics or category slugs: trimmed, lowercase, sorted, unique.
+  // Excluded from artifact identity.
+  repeated string tags = 8;
+  // The publishing account. Excluded from artifact identity.
+  Author author = 9;
+  // The complete original upstream record this reference was derived from,
+  // verbatim (JSON for most registries). Excluded from artifact identity.
+  bytes raw = 10;
+}
+
+message Author {
+  string name = 1;     // display name
+  string username = 2; // registry account handle
+  string id = 3;       // registry account identifier that survives renames
+  string url = 4;      // profile page
+  string email = 5;
+}
+
+message Facts {
+  DownloadStats downloads = 1;         // whole package, all versions
+  DownloadStats version_downloads = 2; // this version only
+  optional int64 installs = 3;         // current install base or active users
+  Repository repository = 4;
+  google.protobuf.Timestamp released_at = 5; // when this version was published
+  google.protobuf.Timestamp updated_at = 6;  // when the package last changed
+}
+
+// Download counts as published at listing time: total since publication, and
+// trailing windows of 1, 7, 30, 90 and 365 days. Unset means not published;
+// zero means the registry reported zero. Never derive one from another.
+message DownloadStats {
+  optional int64 total = 1;
+  optional int64 day = 2;
+  optional int64 week = 3;
+  optional int64 month = 4;
+  optional int64 quarter = 5;
+  optional int64 year = 6;
+}
+
+message Repository {
+  string url = 1;       // canonical https URL, no trailing slash or .git
+  string directory = 2; // subdirectory within a monorepo, if any
+  string commit = 3;    // commit the version was built from, when known
+  string source = 4;    // declared, attested or registry
+}
+
+message Blob {
+  // Unique within an artifact and stable across repeated Resolve calls.
+  string name = 1;
+  string media_type = 2;
+  string digest = 3; // Optional lowercase sha256:<hex>.
+  int64 size = 4; // -1 when unknown; zero means an empty object.
+}
+
+message Artifact {
+  Reference reference = 1;
+  string revision = 2;
+  repeated Blob blobs = 3;
+}
+
+message DiscoverRequest {
+  // Non-secret, plugin-specific query options, validated by the plugin.
+  map<string, string> options = 1;
+}
+message DiscoverResponse { Reference reference = 1; }
+message ResolveRequest {
+  Reference reference = 1;
+  map<string, string> options = 2;
+}
+message ResolveResponse { Artifact artifact = 1; }
+message DownloadRequest {
+  Reference reference = 1;
+  string revision = 2;
+  string blob_name = 3;
+  map<string, string> options = 4;
+}
+message DownloadResponse {
+  // Nonempty chunks of at most 256 KiB, in order, starting at byte zero.
+  // Successful end-of-stream completes the blob. Error trailers mean failure,
+  // even if some bytes were delivered. A retry starts a new stream at byte zero.
+  bytes data = 1;
+}

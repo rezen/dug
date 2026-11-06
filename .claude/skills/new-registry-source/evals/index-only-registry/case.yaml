@@ -1,0 +1,10 @@
+schema_version: "1.1"
+name: index-only-registry
+expected_outcome: |
+  The agent researches the directory with real requests, finds that it is an
+  index whose download links point at arbitrary developer sites (so the fixed
+  download-host allowlist does not fit and many extensions are paid), reports
+  this to the user with the URLs it checked, and asks whether an index-only or
+  per-reference-host mode is wanted instead of building a module. It does not
+  scaffold or leave a half-wired sources/joomla module behind, and it keeps or
+  updates the sources/README.md note for Joomla.

@@ -1,0 +1,13 @@
+schema_version: "1.1"
+name: jenkins-plugins
+expected_outcome: |
+  A new independent module sources/jenkins with a dug-jenkins executable that
+  discovers every plugin from the Jenkins update center, pins the HPI URL,
+  SHA-256 (converted from base64 to hex) and release time, supports
+  version_depth through plugin-versions.json, restricts download URLs to the
+  Jenkins download hosts, rejects unknown options, and has offline tests
+  against an httptest fake. The module is wired into go.work, scripts/build.sh,
+  scripts/check.sh, scripts/check-boundaries.sh, the justfile plugin recipe,
+  the host help text, sources/README.md (table row and todo), docs/plugins.md,
+  docs/monorepo.md and README.md. `just check` and `just build` pass, and a
+  live listing against updates.jenkins.io works.

@@ -1,0 +1,68 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+          - {goos: darwin, goarch: amd64}
+          - {goos: darwin, goarch: arm64}
+          - {goos: windows, goarch: amd64}
+          - {goos: windows, goarch: arm64}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.work
+          cache-dependency-path: '**/go.sum'
+      - name: Build and archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -eu
+          name="dug_${GITHUB_REF_NAME}_${GOOS}_${GOARCH}"
+          ext=""; [ "$GOOS" = windows ] && ext=".exe"
+          mkdir -p "dist/$name"
+          # Same binaries as scripts/build.sh, minus the local-only dug-s3local.
+          for pkg in ./cmd/dug ./sources/*/cmd/*; do
+            go build -trimpath -ldflags "-s -w" -o "dist/$name/$(basename "$pkg")$ext" "$pkg"
+          done
+          cp README.md "dist/$name/"
+          if [ "$GOOS" = windows ]; then
+            (cd dist && zip -qr "$name.zip" "$name")
+          else
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --generate-notes ./*

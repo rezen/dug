@@ -1,0 +1,23 @@
+go 1.26.0
+
+toolchain go1.26.8
+
+use (
+	.
+	./integration
+	./sdk
+	./sources/ansible-galaxy
+	./sources/chrome
+	./sources/firefox
+	./sources/github
+	./sources/helm
+	./sources/n8n
+	./sources/obsidian
+	./sources/wordpress
+)
+
+replace github.com/rezen/dug/sdk v0.0.0 => ./sdk
+
+replace github.com/rezen/dug v0.0.0 => .
+
+replace github.com/rezen/dug/sources/chrome v0.0.0 => ./sources/chrome

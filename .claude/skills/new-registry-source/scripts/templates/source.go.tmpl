@@ -1,0 +1,347 @@
+// Package __PKG__ archives TODO(__NAME__): what this registry hosts, in one line.
+package __PKG__
+
+import (
+	"context"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"maps"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/rezen/dug/sdk/httpx"
+	"github.com/rezen/dug/sdk/registry"
+	"github.com/rezen/dug/sdk/retry"
+)
+
+// Identity is the registry name the host selects: `dug list __NAME__`.
+const Identity = "__NAME__"
+
+// Namespace records where artifacts came from; manifests persist it.
+// TODO(__NAME__): the upstream host.
+const Namespace = "example.invalid"
+
+// DefaultEndpoint is the metadata API base, with a trailing slash.
+// TODO(__NAME__): set it from the research notes.
+const DefaultEndpoint = "https://example.invalid/api/"
+
+// DefaultDownloadHosts is where the registry serves artifact bytes. Resolve
+// refuses persisted download URLs on any other host, so a tampered inventory
+// cannot steer this process at arbitrary servers.
+// TODO(__NAME__): the real download hosts (the URL before any redirect).
+var DefaultDownloadHosts = []string{"example.invalid"}
+
+const maxMetadataBytes = 32 << 20
+
+type Source struct {
+	Client   *http.Client
+	Endpoint string // metadata API base override for tests; empty means DefaultEndpoint
+	Attempts int    // upstream HTTP attempts per request; 0 means 4
+	// DownloadHosts overrides DefaultDownloadHosts; tests point it at httptest.
+	DownloadHosts []string
+
+	// Query options. PluginFactory validates them; Discover re-checks what it
+	// relies on because a Source can also be constructed directly.
+	// TODO(__NAME__): rename Names to the registry's own term (slugs, ids, repos).
+	Names        []string
+	VersionDepth string // empty means the current release only
+}
+
+var _ registry.Registry = (*Source)(nil)
+
+var errStop = errors.New("version depth reached")
+
+// entry is one catalog item as the upstream API describes it.
+// TODO(__NAME__): mirror the real response fields; keep upstream IDs.
+type entry struct {
+	Name     string    `json:"name"`
+	Version  string    `json:"version"`
+	Updated  time.Time `json:"updated"`
+	Released time.Time `json:"released"`
+	URL      string    `json:"download_url"`
+	SHA256   string    `json:"sha256"`
+	Size     int64     `json:"size"`
+}
+
+func (s *Source) base() string {
+	if s.Endpoint != "" {
+		return strings.TrimRight(s.Endpoint, "/") + "/"
+	}
+	return DefaultEndpoint
+}
+
+func (s *Source) attempts() int {
+	if s.Attempts > 0 {
+		return s.Attempts
+	}
+	return 4
+}
+
+func (s *Source) downloadHosts() []string {
+	if s.DownloadHosts != nil {
+		return s.DownloadHosts
+	}
+	return DefaultDownloadHosts
+}
+
+// validName rejects values that could escape a URL path or a file name.
+// TODO(__NAME__): tighten to the registry's identifier rules.
+func validName(name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\?# \t\n\r") {
+		return fmt.Errorf("invalid %s name %q", Identity, name)
+	}
+	return nil
+}
+
+// Discover walks the catalog, or only Names when set, and emits one reference
+// per selected version. Every reference is self-resolved before emission so a
+// listing never persists something stage two would reject.
+func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) error) error {
+	depth, err := registry.ParseVersionDepth(s.VersionDepth)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]bool)
+	add := func(e entry) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if e.Name == "" {
+			return fmt.Errorf("invalid %s catalog entry", Identity)
+		}
+		if seen[e.Name] {
+			return nil
+		}
+		seen[e.Name] = true
+		return s.emitVersions(ctx, e, depth, emit)
+	}
+	if len(s.Names) > 0 {
+		for _, name := range s.Names {
+			if err := validName(name); err != nil {
+				return err
+			}
+			var e entry
+			// TODO(__NAME__): the per-item metadata route.
+			if err := s.query(ctx, s.base()+"items/"+url.PathEscape(name), &e); err != nil {
+				return err
+			}
+			if err := add(e); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return s.walkCatalog(ctx, add)
+}
+
+// walkCatalog enumerates the public catalog page by page. Next-page URLs must
+// stay on the API origin and must not repeat.
+// TODO(__NAME__): adapt to the registry's pagination. See sources/github for
+// Link headers and offset pages, sources/firefox for splitting a capped search
+// window by creation date, sources/chrome for one large document.
+func (s *Source) walkCatalog(ctx context.Context, add func(entry) error) error {
+	raw := s.base() + "items/?page_size=100"
+	seenPages := map[string]bool{raw: true}
+	for {
+		var p struct {
+			Next    string  `json:"next"`
+			Results []entry `json:"results"`
+		}
+		if err := s.query(ctx, raw, &p); err != nil {
+			return err
+		}
+		for _, e := range p.Results {
+			if err := add(e); err != nil {
+				return err
+			}
+		}
+		if p.Next == "" {
+			return nil
+		}
+		next, err := s.next(p.Next, seenPages)
+		if err != nil {
+			return err
+		}
+		raw = next
+	}
+}
+
+// emitVersions emits the current version first, then older versions while the
+// depth allows. A registry without version history emits only the current
+// version and rejects version_depth in PluginFactory.
+func (s *Source) emitVersions(ctx context.Context, e entry, depth registry.VersionDepth, emit func(registry.Reference) error) error {
+	// Item-wide facts are attached to every version, including old ones; they
+	// are a listing-time snapshot, not per-version history. Typed facts the
+	// registry does not publish stay nil; never derive one download window
+	// from another.
+	// TODO(__NAME__): fill Downloads (Total or the trailing window the API
+	// reports), Installs, and Repository from the item, per
+	// references/conventions.md.
+	facts := &registry.Facts{}
+	if !e.Updated.IsZero() {
+		facts.UpdatedAt = registry.Time(e.Updated)
+	}
+	// Registry-specific facts: rating normalized to 0–100 with the raw scale
+	// beside it, num_ratings, anything else as strings.
+	metadata := map[string]string{}
+	count := 0
+	add := func(v entry) error {
+		if !depth.Since.IsZero() {
+			if v.Released.IsZero() {
+				return fmt.Errorf("%s@%s: missing release date for a date cutoff", e.Name, v.Version)
+			}
+			if v.Released.Before(depth.Since) {
+				return nil
+			}
+		}
+		versionMetadata := maps.Clone(metadata)
+		versionMetadata["version_rank"] = strconv.Itoa(count + 1)
+		versionFacts := facts.Clone()
+		if !v.Released.IsZero() {
+			versionFacts.ReleasedAt = registry.Time(v.Released)
+			versionMetadata["release_date_source"] = "TODO(__NAME__)-api-field"
+		}
+		ref := registry.Reference{
+			Registry:   Identity,
+			Namespace:  Namespace,
+			Name:       e.Name,
+			Version:    v.Version,
+			Attributes: map[string]string{"download_url": v.URL, "sha256": normalizeDigest(v.SHA256), "size": strconv.FormatInt(v.Size, 10)},
+			Metadata:   versionMetadata,
+			Facts:      versionFacts,
+		}
+		if _, err := s.Resolve(ctx, ref); err != nil {
+			return fmt.Errorf("%s@%s: %w", e.Name, v.Version, err)
+		}
+		if err := emit(ref); err != nil {
+			return err
+		}
+		count++
+		if depth.Max > 0 && count >= depth.Max {
+			return errStop
+		}
+		return nil
+	}
+	if err := add(e); err != nil {
+		if errors.Is(err, errStop) {
+			return nil
+		}
+		return err
+	}
+	if depth.Max == 1 {
+		return nil
+	}
+	// TODO(__NAME__): page through older versions, newest first, calling add
+	// for each and returning nil on errStop; skip the current version if the
+	// list repeats it. Delete this block when the registry has no history and
+	// PluginFactory rejects version_depth.
+	return nil
+}
+
+// normalizeDigest turns the registry's digest encoding into sha256:<hex>.
+// TODO(__NAME__): decode base64 or strip a prefix if the API uses one.
+func normalizeDigest(value string) string {
+	return "sha256:" + strings.ToLower(strings.TrimPrefix(value, "sha256:"))
+}
+
+// next validates a pagination link: same origin and path prefix as the API
+// base, and not seen before.
+func (s *Source) next(raw string, seen map[string]bool) (string, error) {
+	base, err := url.Parse(s.base())
+	if err != nil {
+		return "", err
+	}
+	u, err := base.Parse(raw)
+	if err != nil || u.Scheme != base.Scheme || u.Host != base.Host || !strings.HasPrefix(u.Path, base.Path) {
+		return "", fmt.Errorf("%s pagination left the API origin", Identity)
+	}
+	if seen[u.String()] {
+		return "", fmt.Errorf("%s pagination cycle", Identity)
+	}
+	seen[u.String()] = true
+	return u.String(), nil
+}
+
+// query fetches one bounded metadata document. Decode failures are permanent:
+// retrying the same bytes cannot help, and the host should not retry either.
+func (s *Source) query(ctx context.Context, raw string, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	response, err := httpx.Get(ctx, s.Client, raw, s.attempts())
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxMetadataBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxMetadataBytes {
+		return retry.Permanent(fmt.Errorf("%s metadata exceeds 32 MiB", Identity))
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return retry.Permanent(fmt.Errorf("%s %s: %w", Identity, raw, err))
+	}
+	return nil
+}
+
+// Resolve trusts nothing in the reference: every persisted field is validated
+// again so a tampered inventory cannot redirect downloads or smuggle a bad
+// digest. It makes no network requests; the pinned descriptor is final, so a
+// version deleted upstream fails instead of being replaced by a newer one.
+func (s *Source) Resolve(ctx context.Context, ref registry.Reference) (registry.Artifact, error) {
+	if ref.Registry != Identity || ref.Version == "" || validName(ref.Name) != nil {
+		return registry.Artifact{}, fmt.Errorf("invalid %s reference", Identity)
+	}
+	raw := ref.Attributes["download_url"]
+	if err := httpx.ValidateURLHost(raw, s.downloadHosts()); err != nil {
+		return registry.Artifact{}, err
+	}
+	digest, err := parseDigest(ref.Attributes["sha256"])
+	if err != nil {
+		return registry.Artifact{}, err
+	}
+	size, err := strconv.ParseInt(ref.Attributes["size"], 10, 64)
+	if err != nil || size < 1 {
+		return registry.Artifact{}, fmt.Errorf("invalid %s artifact size", Identity)
+	}
+	// TODO(__NAME__): the archive's media type and file extension.
+	name := blobName(ref.Name + "-" + ref.Version + ".zip")
+	return registry.Artifact{Reference: ref, Revision: digest, Blobs: []registry.Blob{{
+		Name:      name,
+		MediaType: "application/zip",
+		Digest:    digest,
+		Size:      size,
+		Open: func(ctx context.Context) (io.ReadCloser, error) {
+			response, err := httpx.Get(ctx, s.Client, raw, s.attempts())
+			if err != nil {
+				return nil, err
+			}
+			return response.Body, nil
+		},
+	}}}, nil
+}
+
+// parseDigest accepts exactly sha256:<64 lowercase hex>. A registry that
+// publishes no digest leaves Blob.Digest empty, uses Size -1 when unknown, and
+// picks an immutable upstream ID as Revision; the host hashes the bytes.
+func parseDigest(value string) (string, error) {
+	raw := strings.TrimPrefix(value, "sha256:")
+	hash, err := hex.DecodeString(raw)
+	if err != nil || len(hash) != 32 || raw != hex.EncodeToString(hash) {
+		return "", fmt.Errorf("invalid %s SHA-256", Identity)
+	}
+	return "sha256:" + raw, nil
+}
+
+// blobName keeps a manifest file name free of path separators, because
+// consumers write blob names to disk.
+func blobName(name string) string {
+	return strings.NewReplacer("/", "_", "\\", "_", "\x00", "").Replace(name)
+}
