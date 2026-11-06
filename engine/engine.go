@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -16,11 +17,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rezen/dug/internal/layout"
 	"github.com/rezen/dug/sdk/registry"
 	"github.com/rezen/dug/sdk/retry"
 	"github.com/rezen/dug/services/storage"
 	"golang.org/x/sync/errgroup"
-	"golang.org/x/sync/singleflight"
 )
 
 // copyBufferBytes sizes the staging copy buffer. io.Copy's default 32 KiB
@@ -90,7 +91,6 @@ type run struct {
 	store                                               storage.Store
 	opts                                                Options
 	slots                                               chan struct{}
-	inflight                                            singleflight.Group
 	completed, skipped, failed, uploaded, uploadedBytes atomic.Int64
 }
 
@@ -164,28 +164,39 @@ func Download(ctx context.Context, entries registry.Entries, source registry.Res
 	return report, nil
 }
 
-// ManifestKey is deterministic, including source namespace, version, discovery
-// attributes and resolved revision, so new resource versions get new manifests.
-func ManifestKey(artifact registry.Artifact) string {
-	ref := artifact.Reference
-	// Listing popularity, repositories, timestamps, tags, authorship and raw records must
-	// not trigger re-downloads.
-	ref.Metadata, ref.Facts, ref.Tags, ref.Author, ref.Raw = nil, nil, nil, nil, nil
-	identity, _ := json.Marshal(struct {
-		Reference registry.Reference
-		Revision  string
-	}{ref, artifact.Revision})
-	digest := sha256.Sum256(identity)
-	return "manifests/" + hex.EncodeToString(digest[:]) + ".json"
+// ArtifactDir is <registry>/<type>/artifacts/<name>/<version>: the directory
+// holding one version's files and its manifest.
+func ArtifactDir(artifact registry.Artifact) (string, error) {
+	return layout.ArtifactDir(artifact.Reference)
 }
 
-func BlobKey(digest string) (string, error) {
-	hexDigest := strings.TrimPrefix(digest, "sha256:")
-	decoded, err := hex.DecodeString(hexDigest)
-	if !strings.HasPrefix(digest, "sha256:") || err != nil || len(decoded) != sha256.Size || strings.ToLower(hexDigest) != hexDigest {
-		return "", fmt.Errorf("invalid sha256 digest %q", digest)
+// ManifestKey is the completion record for one resource version, stored next
+// to its files. A new version gets a new directory; a changed revision under
+// the same version replaces the files and manifest in place.
+func ManifestKey(artifact registry.Artifact) (string, error) {
+	dir, err := ArtifactDir(artifact)
+	if err != nil {
+		return "", err
 	}
-	return "blobs/sha256/" + hexDigest, nil
+	return dir + "/" + layout.ManifestName, nil
+}
+
+// blobKeys validates every blob name and returns each blob's key inside dir.
+func blobKeys(dir string, blobs []registry.Blob) ([]string, error) {
+	keys := make([]string, len(blobs))
+	seen := make(map[string]bool, len(blobs))
+	for i, blob := range blobs {
+		name, err := layout.BlobName(blob.Name)
+		if err != nil {
+			return nil, fmt.Errorf("blob %q: %w", blob.Name, err)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate blob name %q", blob.Name)
+		}
+		seen[name] = true
+		keys[i] = dir + "/" + name
+	}
+	return keys, nil
 }
 
 func (r *run) event(event Event) {
@@ -209,13 +220,21 @@ func (r *run) archive(ctx context.Context, source registry.Resolver, ref registr
 	if artifact.Reference.Registry == "" || artifact.Reference.Name == "" || artifact.Revision == "" || len(artifact.Blobs) == 0 {
 		return fmt.Errorf("adapter returned incomplete artifact")
 	}
-	key := ManifestKey(artifact)
+	key, err := ManifestKey(artifact)
+	if err != nil {
+		return err
+	}
+	dir, _ := ArtifactDir(artifact)
+	keys, err := blobKeys(dir, artifact.Blobs)
+	if err != nil {
+		return err
+	}
 	if !r.opts.Refresh {
-		exists, _, err := r.store.Stat(ctx, key)
+		done, err := r.manifestCurrent(ctx, key, artifact.Revision)
 		if err != nil {
 			return err
 		}
-		if exists {
+		if done {
 			r.skipped.Add(1)
 			r.event(Event{Reference: ref, Status: "skipped", Key: key})
 			return nil
@@ -226,7 +245,7 @@ func (r *run) archive(ctx context.Context, source registry.Resolver, ref registr
 	transfers.SetLimit(r.opts.Downloads)
 	for i, blob := range artifact.Blobs {
 		transfers.Go(func() error {
-			stored, err := r.blob(ctx, blob)
+			stored, err := r.blob(ctx, blob, keys[i])
 			if err != nil {
 				return fmt.Errorf("blob %s: %w", blob.Name, err)
 			}
@@ -256,64 +275,80 @@ func (r *run) archive(ctx context.Context, source registry.Resolver, ref registr
 	return nil
 }
 
-func (r *run) blob(ctx context.Context, blob registry.Blob) (StoredBlob, error) {
+// manifestCurrent reports whether key holds a manifest for this revision. A store
+// that cannot read objects trusts existence alone.
+func (r *run) manifestCurrent(ctx context.Context, key, revision string) (bool, error) {
+	exists, _, err := r.store.Stat(ctx, key)
+	if err != nil || !exists {
+		return false, err
+	}
+	readable, ok := r.store.(storage.ReadableStore)
+	if !ok {
+		return true, nil
+	}
+	body, err := readable.Open(ctx, key)
+	if errors.Is(err, storage.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer body.Close()
+	var previous Manifest
+	if err := json.NewDecoder(io.LimitReader(body, 16<<20)).Decode(&previous); err != nil {
+		// An unreadable manifest is not proof of completion; archive again.
+		return false, nil
+	}
+	return previous.Revision == revision, nil
+}
+
+func (r *run) blob(ctx context.Context, blob registry.Blob, key string) (StoredBlob, error) {
 	if blob.Open == nil || blob.Size < -1 {
 		return StoredBlob{}, fmt.Errorf("invalid blob descriptor")
 	}
 	if blob.Size > r.opts.MaxBlobBytes {
 		return StoredBlob{}, fmt.Errorf("size %d exceeds maximum %d", blob.Size, r.opts.MaxBlobBytes)
 	}
-	transfer := func() (any, error) {
-		var stored StoredBlob
-		err := retry.Do(ctx, r.opts.Attempts, func() error {
-			// A download slot is held only while an attempt is active, so a
-			// blob waiting out its retry backoff does not idle global capacity.
-			select {
-			case r.slots <- struct{}{}:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-			defer func() { <-r.slots }()
-			attempt, cancel := context.WithTimeout(ctx, r.opts.Timeout)
-			defer cancel()
-			var err error
-			stored, err = r.transfer(attempt, blob)
-			return err
-		})
-		return stored, err
-	}
-	var result any
-	var err error
 	if blob.Digest != "" {
-		if _, err := BlobKey(blob.Digest); err != nil {
+		if err := validDigest(blob.Digest); err != nil {
 			return StoredBlob{}, err
 		}
-		result, err, _ = r.inflight.Do(blob.Digest, transfer)
-	} else {
-		result, err = transfer()
 	}
+	var stored StoredBlob
+	err := retry.Do(ctx, r.opts.Attempts, func() error {
+		// A download slot is held only while an attempt is active, so a
+		// blob waiting out its retry backoff does not idle global capacity.
+		select {
+		case r.slots <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		defer func() { <-r.slots }()
+		attempt, cancel := context.WithTimeout(ctx, r.opts.Timeout)
+		defer cancel()
+		var err error
+		stored, err = r.transfer(attempt, blob, key)
+		return err
+	})
 	if err != nil {
 		return StoredBlob{}, err
 	}
-	stored := result.(StoredBlob)
 	if blob.Size >= 0 && stored.Size >= 0 && blob.Size != stored.Size {
 		return StoredBlob{}, fmt.Errorf("conflicting sizes for digest %s", blob.Digest)
 	}
 	return stored, nil
 }
 
-func (r *run) transfer(ctx context.Context, blob registry.Blob) (StoredBlob, error) {
-	if blob.Digest != "" && blob.Size >= 0 {
-		key, _ := BlobKey(blob.Digest)
-		exists, size, err := r.store.Stat(ctx, key)
-		if err != nil {
-			return StoredBlob{}, err
-		}
-		if exists && (size < 0 || size == blob.Size) {
-			return StoredBlob{Digest: blob.Digest, Size: blob.Size, Key: key}, nil
-		}
-		// A stored object with the wrong size is not trusted; it is replaced below.
+func validDigest(digest string) error {
+	hexDigest := strings.TrimPrefix(digest, "sha256:")
+	decoded, err := hex.DecodeString(hexDigest)
+	if !strings.HasPrefix(digest, "sha256:") || err != nil || len(decoded) != sha256.Size || strings.ToLower(hexDigest) != hexDigest {
+		return fmt.Errorf("invalid sha256 digest %q", digest)
 	}
+	return nil
+}
+
+func (r *run) transfer(ctx context.Context, blob registry.Blob, key string) (StoredBlob, error) {
 	file, err := os.CreateTemp(r.opts.TempDir, "dug-blob-*")
 	if err != nil {
 		return StoredBlob{}, retry.Permanent(err)
@@ -346,20 +381,17 @@ func (r *run) transfer(ctx context.Context, blob registry.Blob) (StoredBlob, err
 	if blob.Digest != "" && blob.Digest != digest {
 		return StoredBlob{}, fmt.Errorf("checksum mismatch: expected %s, received %s", blob.Digest, digest)
 	}
-	key, _ := BlobKey(digest)
-	exists, size, err := r.store.Stat(ctx, key)
-	if err != nil {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return StoredBlob{}, err
 	}
-	if !exists || (size >= 0 && size != n) {
-		if _, err := file.Seek(0, io.SeekStart); err != nil {
-			return StoredBlob{}, err
-		}
-		if err := r.store.Put(ctx, key, file, n, "application/octet-stream"); err != nil {
-			return StoredBlob{}, err
-		}
-		r.uploaded.Add(1)
-		r.uploadedBytes.Add(n)
+	mediaType := blob.MediaType
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
 	}
+	if err := r.store.Put(ctx, key, file, n, mediaType); err != nil {
+		return StoredBlob{}, err
+	}
+	r.uploaded.Add(1)
+	r.uploadedBytes.Add(n)
 	return StoredBlob{Digest: digest, Size: n, Key: key}, nil
 }

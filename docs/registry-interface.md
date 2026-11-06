@@ -22,7 +22,7 @@ The host wraps its URL using `plugin.NewClient` and calls
 `engine.Download(ctx, snapshot.Entries, client, store, engine.DefaultOptions())`
 for stage two. `Registry` embeds separate `Lister` and `Resolver` interfaces;
 the download engine accepts only a `Resolver` and saved `Entries`. The engine owns
-concurrency, retries, integrity checking, staging, deduplication, and completion.
+concurrency, retries, integrity checking, staging, and completion.
 Implement `storage.ReadableStore` (`Stat`, `Put`, `Open`) to add another object backend. Public packages are in
 `sdk/registry/`, `sdk/plugin/`, `engine/`, `sources/`, `sdk/services/`, and `services/storage/`; the host CLI
 lives in `cmd/dug/`. Each source owns its executable under `sources/NAME/cmd/dug-NAME/`.

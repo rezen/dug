@@ -58,7 +58,7 @@ Stage 2 (download): sort that inventory and download without listing again.
 sync runs both stages with a completion barrier between them.
 sync reuses the last completed inventory for the same registry, --option values
 and --list-limit; --rediscover (or --inventory KEY) overrides. With no prior run
-it lists first. list and sync record that last run in S3 under last_run/.
+it lists first. list and sync record that last run in S3 under <registry>/<type>/last_run/.
 
 List output: --format table (default), jsonl (references), or summary (JSON).
 Local inventories: --inventory-dir .local/inventories (default).

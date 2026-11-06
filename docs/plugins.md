@@ -18,7 +18,7 @@ flowchart LR
 
 ## Boundary and ownership
 
-The host owns worker limits, staging files, SHA-256, deduplication, retry policy,
+The host owns worker limits, staging files, SHA-256, retry policy,
 inventories, ordering, completion manifests, and S3 credentials. A plugin owns upstream authentication,
 pagination, artifact resolution, and fetching bytes. The plugin never receives
 S3 credentials or filesystem paths from the host. Each bundled plugin also limits

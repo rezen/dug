@@ -42,7 +42,10 @@ const (
 	// Artifact Hub's CDN answers more than about one search request per second
 	// with a bare 429 and no Retry-After; two seconds ran 70 requests cleanly.
 	defaultSearchInterval = 2 * time.Second
-	maxCatalogPasses      = 3
+	// After the full walk the first catchUpRows results are read again, up to
+	// catchUpPasses times, to pick up charts updated while it ran.
+	catchUpPasses = 3
+	catchUpRows   = 180
 )
 
 type Source struct {
@@ -210,18 +213,22 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 
 // catalog collects every chart in the search, including deprecated ones, which
 // Artifact Hub hides by default but which are still archives worth keeping.
-// Search offsets shift while the catalog changes, so the whole index is
-// gathered first (about 310 requests) and ordered by last update, which moves
-// changed charts toward the front where a walk has already been; the walk is
-// repeated when it comes up short of the reported total. A remaining gap is
-// small churn, never a silent truncation: a large one is an error.
+//
+// Search offsets shift while the catalog changes, and a full walk takes about
+// ten minutes. The search is ordered by last update, so a chart updated mid-walk
+// jumps to the front, where the walk has already passed: it is missed, and the
+// charts before it shift back and repeat. Those misses are all at the front,
+// so after the walk the first few pages are read again until they add nothing
+// new. A gap that remains is deletions or a very busy index: a small one is a
+// warning, a large one an error, never a silent truncation.
 func (s *Source) catalog(ctx context.Context, hub *artifacthub.Client) ([]artifacthub.Package, error) {
 	var entries []artifacthub.Package
 	seen := make(map[string]bool)
 	filter := artifacthub.Filter{Repos: s.Repos, Text: s.Search, Deprecated: true}
-	total := 0
-	for pass := 0; pass < maxCatalogPasses; pass++ {
-		var err error
+	// walk reads up to rows results (all of them when 0) and reports how many
+	// charts were new, and the total Artifact Hub reported.
+	walk := func(rows int) (added, total int, err error) {
+		read := 0
 		total, err = hub.SearchFiltered(ctx, artifacthub.KindHelm, filter, func(p artifacthub.Package) error {
 			if p.ID == "" {
 				return retry.Permanent(fmt.Errorf("helm search result without a package ID"))
@@ -229,20 +236,37 @@ func (s *Source) catalog(ctx context.Context, hub *artifacthub.Client) ([]artifa
 			if !seen[p.ID] {
 				seen[p.ID] = true
 				entries = append(entries, p)
+				added++
+			}
+			if read++; rows > 0 && read >= rows {
+				return errStop
 			}
 			return nil
 		})
+		if errors.Is(err, errStop) {
+			err = nil
+		}
+		return added, total, err
+	}
+	_, total, err := walk(0)
+	if err != nil {
+		return nil, err
+	}
+	for range catchUpPasses {
+		added, t, err := walk(catchUpRows)
 		if err != nil {
 			return nil, err
 		}
-		if len(entries) >= total {
-			return entries, nil
+		total = t
+		if added == 0 {
+			break
 		}
 	}
 	if gap := total - len(entries); gap > max(5, total/200) {
 		return nil, fmt.Errorf("helm search ended early: got %d of %d charts", len(entries), total)
+	} else if gap > 0 {
+		slog.Warn("helm search reported more charts than it served", "got", len(entries), "total", total)
 	}
-	slog.Warn("helm search missed charts that changed during the walk", "got", len(entries), "total", total)
 	return entries, nil
 }
 

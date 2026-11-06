@@ -3,11 +3,10 @@ package inventory
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"testing"
 
@@ -36,9 +35,8 @@ func TestCreateRetainsCompleteLocalInventory(t *testing.T) {
 	if !bytes.Equal(local, store.Objects()[summary.Key]) {
 		t.Fatal("local and remote inventories differ")
 	}
-	digest := sha256.Sum256(local)
-	if filepath.Base(summary.LocalPath) != hex.EncodeToString(digest[:])+".jsonl" {
-		t.Fatal("local filename does not identify its contents")
+	if filepath.Base(summary.LocalPath) != path.Base(summary.Key) {
+		t.Fatal("local filename does not match the stored inventory id")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(local))
 	for _, kind := range []string{"header", "entry", "complete"} {

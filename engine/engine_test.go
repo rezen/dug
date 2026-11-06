@@ -49,6 +49,24 @@ func artifact(name, data string, opens *atomic.Int64) registry.Artifact {
 		return io.NopCloser(strings.NewReader(data)), nil
 	}}}}
 }
+func manifestKey(t *testing.T, a registry.Artifact) string {
+	t.Helper()
+	key, err := ManifestKey(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+func blobKey(t *testing.T, a registry.Artifact) string {
+	t.Helper()
+	dir, err := ArtifactDir(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir + "/" + a.Blobs[0].Name
+}
+
 func options(t *testing.T) Options {
 	t.Helper()
 	opts := DefaultOptions()
@@ -57,7 +75,7 @@ func options(t *testing.T) Options {
 	return opts
 }
 
-func TestDedupResumeAndManifest(t *testing.T) {
+func TestResumeAndManifest(t *testing.T) {
 	var opens atomic.Int64
 	s := source{artifacts: []registry.Artifact{artifact("a", "shared payload", &opens), artifact("b", "shared payload", &opens)}}
 	store := memstore.New()
@@ -66,20 +84,20 @@ func TestDedupResumeAndManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Completed != 2 || report.UploadedBlobs != 1 || opens.Load() != 1 {
+	if report.Completed != 2 || report.UploadedBlobs != 2 || opens.Load() != 2 {
 		t.Fatalf("report=%+v opens=%d", report, opens.Load())
 	}
 	for _, a := range s.artifacts {
 		var m Manifest
-		if err := json.Unmarshal(store.Objects()[ManifestKey(a)], &m); err != nil {
+		if err := json.Unmarshal(store.Objects()[manifestKey(t, a)], &m); err != nil {
 			t.Fatal(err)
 		}
-		if m.SchemaVersion != 1 || len(m.Blobs) != 1 || m.Blobs[0].Name != a.Reference.Name || string(store.Objects()[m.Blobs[0].Key]) != "shared payload" {
+		if m.SchemaVersion != 1 || len(m.Blobs) != 1 || m.Blobs[0].Name != a.Reference.Name || m.Blobs[0].Key != blobKey(t, a) || string(store.Objects()[m.Blobs[0].Key]) != "shared payload" {
 			t.Fatalf("bad manifest %+v", m)
 		}
 	}
 	report, err = runFixture(context.Background(), s, store, opts)
-	if err != nil || report.Skipped != 2 || opens.Load() != 1 {
+	if err != nil || report.Skipped != 2 || opens.Load() != 2 {
 		t.Fatalf("resume: %+v %v opens=%d", report, err, opens.Load())
 	}
 }
@@ -212,7 +230,7 @@ func TestRefreshUnknownDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	var m Manifest
-	if err := json.Unmarshal(store.Objects()[ManifestKey(a)], &m); err != nil {
+	if err := json.Unmarshal(store.Objects()[manifestKey(t, a)], &m); err != nil {
 		t.Fatal(err)
 	}
 	if m.Blobs[0].Digest != digest("new") {
@@ -228,22 +246,22 @@ func runFixture(ctx context.Context, source registry.Registry, store storage.Sto
 func TestSchedulingMetadataDoesNotChangeCompletionIdentity(t *testing.T) {
 	var opens atomic.Int64
 	a := artifact("same-version", "payload", &opens)
-	key := ManifestKey(a)
+	key := manifestKey(t, a)
 	a.Reference.Metadata = map[string]string{"stars": "999", "rating": "80"}
-	if ManifestKey(a) != key {
+	if manifestKey(t, a) != key {
 		t.Fatal("mutable scheduling metadata changed resource identity")
 	}
 	a.Reference.Facts = &registry.Facts{Downloads: &registry.DownloadStats{Total: registry.Int64(999)}, Installs: registry.Int64(5), Repository: &registry.Repository{URL: "https://github.com/acme/widget", Source: registry.RepositoryRegistry}, UpdatedAt: registry.Time(time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC))}
-	if ManifestKey(a) != key {
+	if manifestKey(t, a) != key {
 		t.Fatal("mutable typed facts changed resource identity")
 	}
 	a.Reference.Tags = []string{"security", "seo"}
 	a.Reference.Author = &registry.Author{Username: "acme", ID: "7"}
-	if ManifestKey(a) != key {
+	if manifestKey(t, a) != key {
 		t.Fatal("tags or author changed resource identity")
 	}
 	a.Reference.Raw = []byte(`{"downloads":999}`)
-	if ManifestKey(a) != key {
+	if manifestKey(t, a) != key {
 		t.Fatal("raw record changed resource identity")
 	}
 }
@@ -257,7 +275,7 @@ func TestTruncatedStoredBlobIsReplaced(t *testing.T) {
 				a.Blobs[0].Size = -1
 			}
 			store := memstore.New()
-			key, _ := BlobKey(a.Blobs[0].Digest)
+			key := blobKey(t, a)
 			if err := store.Put(context.Background(), key, strings.NewReader("complete"), 8, "application/octet-stream"); err != nil {
 				t.Fatal(err)
 			}
@@ -329,8 +347,85 @@ func TestLargeBlobSpansCopyBuffers(t *testing.T) {
 	if err != nil || report.UploadedBytes != int64(len(data)) {
 		t.Fatalf("report=%+v err=%v", report, err)
 	}
-	key, _ := BlobKey(a.Blobs[0].Digest)
+	key := blobKey(t, a)
 	if string(store.Objects()[key]) != data {
 		t.Fatal("stored bytes differ")
+	}
+}
+
+func TestObjectsLiveUnderRegistryTypeDirectory(t *testing.T) {
+	data := "zip bytes"
+	open := func(context.Context) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(data)), nil }
+	cases := []struct {
+		ref  registry.Reference
+		want string
+	}{
+		{registry.Reference{Registry: "wordpress", Name: "akismet", Version: "5.3"}, "wordpress/plugins/artifacts/akismet/5.3/"},
+		{registry.Reference{Registry: "wordpress-themes", Name: "astra", Version: "4.0"}, "wordpress/themes/artifacts/astra/4.0/"},
+		{registry.Reference{Registry: "github", Name: "cli/cli", Version: "feature/x"}, "github/repos/artifacts/cli/cli/feature%2Fx/"},
+	}
+	for _, c := range cases {
+		a := registry.Artifact{Reference: c.ref, Revision: "r", Blobs: []registry.Blob{{Name: "pkg.zip", Size: int64(len(data)), Open: open}}}
+		store := memstore.New()
+		if _, err := runFixture(context.Background(), source{artifacts: []registry.Artifact{a}}, store, options(t)); err != nil {
+			t.Fatal(err)
+		}
+		if string(store.Objects()[c.want+"pkg.zip"]) != data || len(store.Objects()[c.want+"manifest.json"]) == 0 || len(store.Objects()) != 2 {
+			t.Fatalf("%s: objects=%v", c.want, store.Objects())
+		}
+	}
+}
+
+func TestChangedRevisionReplacesVersionInPlace(t *testing.T) {
+	var opens atomic.Int64
+	a := artifact("moving", "old", &opens)
+	store := memstore.New()
+	opts := options(t)
+	if _, err := runFixture(context.Background(), source{artifacts: []registry.Artifact{a}}, store, opts); err != nil {
+		t.Fatal(err)
+	}
+	b := artifact("moving", "newer", &opens)
+	b.Revision = "2"
+	report, err := runFixture(context.Background(), source{artifacts: []registry.Artifact{b}}, store, opts)
+	if err != nil || report.Completed != 1 || report.Skipped != 0 {
+		t.Fatalf("%+v %v", report, err)
+	}
+	if string(store.Objects()[blobKey(t, b)]) != "newer" {
+		t.Fatal("changed revision kept the old bytes")
+	}
+}
+
+func TestUnsafeKeyPartsAreRejected(t *testing.T) {
+	var opens atomic.Int64
+	for name, mutate := range map[string]func(*registry.Artifact){
+		"dotdot-name":     func(a *registry.Artifact) { a.Reference.Name = "a/../b" },
+		"dotdot-version":  func(a *registry.Artifact) { a.Reference.Version = ".." },
+		"reserved-blob":   func(a *registry.Artifact) { a.Blobs[0].Name = "manifest.json" },
+		"empty-blob":      func(a *registry.Artifact) { a.Blobs[0].Name = "" },
+		"dotdot-registry": func(a *registry.Artifact) { a.Reference.Registry = ".." },
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := artifact("ok", "payload", &opens)
+			mutate(&a)
+			store := memstore.New()
+			report, err := runFixture(context.Background(), source{artifacts: []registry.Artifact{a}}, store, options(t))
+			if err == nil || report.Failed != 1 || len(store.Objects()) != 0 {
+				t.Fatalf("report=%+v err=%v objects=%v", report, err, store.Objects())
+			}
+		})
+	}
+}
+
+func TestBlobNameCannotAddPathLevels(t *testing.T) {
+	var opens atomic.Int64
+	a := artifact("ok", "payload", &opens)
+	a.Blobs[0].Name = "../x"
+	store := memstore.New()
+	if _, err := runFixture(context.Background(), source{artifacts: []registry.Artifact{a}}, store, options(t)); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := ArtifactDir(a)
+	if _, ok := store.Objects()[dir+"/..%2Fx"]; !ok || len(store.Objects()) != 2 {
+		t.Fatalf("objects=%v", store.Objects())
 	}
 }

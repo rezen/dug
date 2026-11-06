@@ -100,13 +100,13 @@ func TestSitemapConnectInventoryAndDownload(t *testing.T) {
 	if _, err := engine.Download(ctx, snapshot.Entries, client, store, opts); err != nil {
 		t.Fatal(err)
 	}
-	if updates.Load() != 2 || downloads.Load() != 1 {
-		t.Fatalf("relisted or failed digest dedup: updates=%d downloads=%d", updates.Load(), downloads.Load())
+	if updates.Load() != 2 || downloads.Load() != 2 {
+		t.Fatalf("relisted or wrong download count: updates=%d downloads=%d", updates.Load(), downloads.Load())
 	}
 	if _, err := engine.Download(ctx, snapshot.Entries, client, store, opts); err != nil {
 		t.Fatal(err)
 	}
-	if downloads.Load() != 1 {
+	if downloads.Load() != 2 {
 		t.Fatal("resume downloaded again")
 	}
 }

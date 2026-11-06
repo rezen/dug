@@ -9,14 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
+	"github.com/rezen/dug/internal/layout"
 	"github.com/rezen/dug/sdk/retry"
 	"github.com/rezen/dug/services/storage"
 )
-
-const lastRunPrefix = "last_run/"
 
 // LastRun points at the most recent completed inventory for one query. A query
 // is the registry, its plugin options, and the listing limit, so a pointer is
@@ -30,7 +28,11 @@ type LastRun struct {
 	CreatedAt    time.Time         `json:"created_at"`
 }
 
-func lastRunKey(registry string, options map[string]string, limit int) string {
+func lastRunKey(registry string, options map[string]string, limit int) (string, error) {
+	prefix, err := layout.LastRunPrefix(registry)
+	if err != nil {
+		return "", err
+	}
 	// encoding/json sorts map keys, so equal queries hash identically.
 	query, _ := json.Marshal(struct {
 		Registry string            `json:"registry"`
@@ -38,7 +40,7 @@ func lastRunKey(registry string, options map[string]string, limit int) string {
 		Limit    int               `json:"limit"`
 	}{registry, options, limit})
 	sum := sha256.Sum256(query)
-	return lastRunPrefix + hex.EncodeToString(sum[:]) + ".json"
+	return prefix + hex.EncodeToString(sum[:]) + ".json", nil
 }
 
 // SaveLastRun records summary as the latest inventory for header's query,
@@ -58,10 +60,14 @@ func SaveLastRun(ctx context.Context, store storage.Store, header Header, summar
 	if err != nil {
 		return err
 	}
+	key, err := lastRunKey(header.Registry, header.Options, header.Limit)
+	if err != nil {
+		return err
+	}
 	return retry.Do(ctx, opts.Attempts, func() error {
 		attempt, cancel := context.WithTimeout(ctx, opts.Timeout)
 		defer cancel()
-		return store.Put(attempt, lastRunKey(header.Registry, header.Options, header.Limit), bytes.NewReader(body), int64(len(body)), "application/json")
+		return store.Put(attempt, key, bytes.NewReader(body), int64(len(body)), "application/json")
 	})
 }
 
@@ -71,10 +77,13 @@ func LoadLastRun(ctx context.Context, store storage.ReadableStore, registry stri
 	if err := opts.Validate(); err != nil {
 		return LastRun{}, false, err
 	}
-	key := lastRunKey(registry, options, limit)
+	key, err := lastRunKey(registry, options, limit)
+	if err != nil {
+		return LastRun{}, false, err
+	}
 	var run LastRun
 	found := false
-	err := retry.Do(ctx, opts.Attempts, func() error {
+	err = retry.Do(ctx, opts.Attempts, func() error {
 		attempt, cancel := context.WithTimeout(ctx, opts.Timeout)
 		defer cancel()
 		reader, err := store.Open(attempt, key)
@@ -99,7 +108,8 @@ func LoadLastRun(ctx context.Context, store storage.ReadableStore, registry stri
 	if err != nil || !found {
 		return LastRun{}, false, err
 	}
-	if run.Registry != registry || !strings.HasPrefix(run.InventoryKey, keyPrefix) {
+	invDir, _, ok := layout.ParseInventoryKey(run.InventoryKey)
+	if dir, _ := layout.Dir(registry); run.Registry != registry || !ok || invDir != dir {
 		return LastRun{}, false, fmt.Errorf("last run pointer %s is invalid", key)
 	}
 	return run, true, nil

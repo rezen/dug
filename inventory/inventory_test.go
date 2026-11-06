@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/rezen/dug/internal/layout"
 	"io"
 	"os"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rezen/dug/sdk/registry"
 	"github.com/rezen/dug/services/storage/memstore"
@@ -158,13 +160,8 @@ func TestCorruptAndIncompleteInventoriesAreRejected(t *testing.T) {
 			if kind == "trailing" {
 				values = append(values, record{Type: "entry", Reference: &entry})
 			}
-			var body strings.Builder
-			for _, value := range values {
-				json.NewEncoder(&body).Encode(value)
-			}
-			sum := sha256.Sum256([]byte(body.String()))
-			key := keyPrefix + hex.EncodeToString(sum[:]) + ".jsonl"
-			data := body.String()
+			data := encodeInventory(values)
+			key := testKey(t)
 			if kind == "checksum" {
 				data = strings.Replace(data, "item", "edit", 1)
 			}
@@ -230,13 +227,9 @@ func TestOversizedInventoryLineFailsWithoutRetry(t *testing.T) {
 	store := &countingStore{Store: memstore.New()}
 	entry := ref("item", "1")
 	entry.Metadata["pad"] = strings.Repeat("x", maxRecordBytes)
-	var body strings.Builder
-	for _, value := range []record{{Type: "header", Header: &Header{SchemaVersion: 1, Registry: "test"}}, {Type: "entry", Reference: &entry}, {Type: "complete", Count: 1}} {
-		json.NewEncoder(&body).Encode(value)
-	}
-	sum := sha256.Sum256([]byte(body.String()))
-	key := keyPrefix + hex.EncodeToString(sum[:]) + ".jsonl"
-	if err := store.Put(context.Background(), key, strings.NewReader(body.String()), int64(body.Len()), "application/x-ndjson"); err != nil {
+	body := encodeInventory([]record{{Type: "header", Header: &Header{SchemaVersion: 1, Registry: "test"}}, {Type: "entry", Reference: &entry}, {Type: "complete", Count: 1}})
+	key := testKey(t)
+	if err := store.Put(context.Background(), key, strings.NewReader(body), int64(len(body)), "application/x-ndjson"); err != nil {
 		t.Fatal(err)
 	}
 	opts := testOptions(t)
@@ -286,4 +279,34 @@ func TestDiscoveryOrderStreamsWithoutSortRuns(t *testing.T) {
 			t.Fatalf("item %d has sequence %d", i, item.Sequence)
 		}
 	}
+}
+
+// encodeInventory writes records as JSONL and fills each complete record's
+// digest with the hash of the lines before it.
+func encodeInventory(values []record) string {
+	var body strings.Builder
+	hash := sha256.New()
+	for _, value := range values {
+		if value.Type == "complete" {
+			value.Digest = hex.EncodeToString(hash.Sum(nil))
+		}
+		line, _ := json.Marshal(value)
+		line = append(line, '\n')
+		body.Write(line)
+		hash.Write(line)
+	}
+	return body.String()
+}
+
+func testKey(t *testing.T) string {
+	t.Helper()
+	id, err := layout.NewULID(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := layout.InventoryKey("test", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
 }

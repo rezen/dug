@@ -90,7 +90,8 @@ func TestRemoteEngineArchiveAndResume(t *testing.T) {
 	if opens.Load() != 1 {
 		t.Fatalf("downloads=%d", opens.Load())
 	}
-	key, _ := engine.BlobKey(artifact(data).Blobs[0].Digest)
+	dir, _ := engine.ArtifactDir(artifact(data))
+	key := dir + "/archive.zip"
 	if string(store.Objects()[key]) != data {
 		t.Fatal("stored data differs")
 	}

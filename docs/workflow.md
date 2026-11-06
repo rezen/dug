@@ -6,7 +6,8 @@ How `list`, `download`, and `sync` fit together, and how downloads are prioritiz
 IDs to stdout. WordPress rows explicitly distinguish provider `wordpress`, kind
 `plugins` from kind `themes`. It fetches metadata only, with no artifact downloads.
 On success it saves an identical JSONL inventory (header, references, completion
-count) to S3 and `.local/inventories/<sha256>.jsonl`, then prints the absolute local
+count) to S3 (`<registry>/<type>/inventories/<ulid>.jsonl`, see
+[storage](storage.md)) and `.local/inventories/<ulid>.jsonl`, then prints the absolute local
 path and S3 URI to stderr. Use `--inventory-dir DIR` to choose the local directory.
 The header records the registry, provider and kind (when advertised), query
 options, timestamp, and selection limit. Older plugins show `-` for unknown
@@ -34,7 +35,7 @@ filtering; zero means unlimited. `sync --list-limit N` optionally bounds its
 stage-one inventory separately. Without it, `sync` lists the whole matching
 catalog before choosing its top N. `sync` logs the inventory key before downloading.
 
-Every completed stage one (`list` or `sync`) records a `last_run/` pointer in S3 for
+Every completed stage one (`list` or `sync`) records a `<registry>/<type>/last_run/` pointer in S3 for
 its query: registry, plugin options (including `--version-depth`), and list limit.
 `sync` defaults to that pointer and logs `reusing last run`; it lists the catalog
 only when no pointer exists. Pass `--rediscover` to list again (which replaces the

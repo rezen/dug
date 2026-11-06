@@ -18,7 +18,7 @@ description: >-
 A source is an independent Go module at `sources/NAME` that speaks the Connect
 registry protocol for one upstream catalog. It depends only on
 `github.com/rezen/dug/sdk`. The host owns S3, ordering, filtering, resume,
-hashing, deduplication, and transfer retries; the source owns upstream
+hashing and transfer retries; the source owns upstream
 pagination, authentication, artifact resolution, and fetching bytes. The result
 is an executable `dug-NAME` that the host reaches by URL and selects with
 `dug list NAME`.

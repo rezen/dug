@@ -109,3 +109,9 @@ credentials), the extraction note, and the upstream API reference link.
 - `scripts/e2e-NAME.sh` and a `just e2e-NAME` recipe: a live run against
   `bin/dug-s3local` with integrity and resume checks, following
   `scripts/e2e-firefox.sh`.
+
+## Bucket layout
+
+Add the registry identity to the `types` map in `internal/layout/layout.go` so its
+objects land under `<registry>/<type>/` (for example `helm/charts`). An unlisted
+registry works but is filed under `<registry>/packages`.

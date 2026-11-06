@@ -45,6 +45,7 @@ type fake struct {
 	searches  []string
 	total     int  // overrides Pagination-Total-Count when positive
 	dupes     bool // repeat an entry on a later page, as a shifting catalog does
+	hideFirst bool // the first search misses widget, as when it is updated mid-walk
 	noDigest  map[string]bool
 	ociURL    bool // content_url points at an OCI registry, as Bitnami's does
 }
@@ -94,6 +95,9 @@ func (f *fake) handler(w http.ResponseWriter, r *http.Request) {
 		}
 		if f.dupes {
 			all = append(all, all[0])
+		}
+		if f.hideFirst && len(f.searches) == 1 {
+			all = all[1:2]
 		}
 		end := min(offset+limit, len(all))
 		page := []map[string]any{}
@@ -291,8 +295,8 @@ func TestCatalogWalkFiltersAndSkipsOCI(t *testing.T) {
 	if refs[0].Metadata["stars"] != "42" {
 		t.Errorf("stars: %v", refs[0].Metadata)
 	}
-	if len(f.searches) != 1 {
-		t.Fatalf("made %d search requests, want 1: %v", len(f.searches), f.searches)
+	if len(f.searches) != 2 { // the walk, then one read of the front for charts updated meanwhile
+		t.Fatalf("made %d search requests, want 2: %v", len(f.searches), f.searches)
 	}
 	q, _ := url.ParseQuery(f.searches[0])
 	if q.Get("offset") != "0" || q.Get("limit") != "60" || q.Get("kind") != "0" || q.Get("deprecated") != "true" || q.Get("sort") != "last_updated" {
@@ -309,6 +313,17 @@ func TestCatalogWalkDedupesShiftedEntries(t *testing.T) {
 	f.total = 3
 	if got := versions(collect(t, s)); !slices.Equal(got, []string{"1.2.0"}) {
 		t.Fatalf("got %v: a chart repeated across pages must be emitted once", got)
+	}
+}
+
+func TestCatalogCatchUpFindsChartsUpdatedMidWalk(t *testing.T) {
+	f, s := newFake(t)
+	f.hideFirst = true
+	if got := versions(collect(t, s)); !slices.Equal(got, []string{"1.2.0"}) {
+		t.Fatalf("got %v: the chart missed by the first walk must be found at the front", got)
+	}
+	if len(f.searches) != 3 { // walk, a catch-up that finds it, a catch-up that finds nothing new
+		t.Errorf("%d search requests, want 3", len(f.searches))
 	}
 }
 
@@ -503,10 +518,10 @@ func TestEmitErrorStopsDiscovery(t *testing.T) {
 func TestSearchRequestsAreSpaced(t *testing.T) {
 	f, s := newFake(t)
 	s.SearchInterval = 40 * time.Millisecond
-	f.total = 3 // one chart "moved": the walk repeats, three passes in all
+	f.total = 3 // one chart "moved": the front is read again after the walk
 	start := time.Now()
 	collect(t, s)
-	if elapsed := time.Since(start); len(f.searches) != 3 || elapsed < 70*time.Millisecond {
-		t.Errorf("%d search requests took %s, want 3 spaced at least 40ms apart", len(f.searches), elapsed)
+	if elapsed := time.Since(start); len(f.searches) != 2 || elapsed < 35*time.Millisecond {
+		t.Errorf("%d search requests took %s, want 2 spaced at least 40ms apart", len(f.searches), elapsed)
 	}
 }

@@ -14,9 +14,9 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/rezen/dug/internal/layout"
 	"github.com/rezen/dug/sdk/registry"
 	"github.com/rezen/dug/sdk/retry"
 	"github.com/rezen/dug/services/storage"
@@ -24,7 +24,6 @@ import (
 
 // Must exceed the plugin message cap (24 MiB) after JSON base64-encodes raw.
 const maxRecordBytes = 32 << 20
-const keyPrefix = "inventories/sha256/"
 
 type Header struct {
 	SchemaVersion int    `json:"schema_version"`
@@ -47,6 +46,9 @@ type record struct {
 	Header    *Header             `json:"header,omitempty"`
 	Reference *registry.Reference `json:"reference,omitempty"`
 	Count     int64               `json:"count,omitempty"`
+	// Digest is the SHA-256 of every line before the complete record, so a
+	// truncated or edited inventory is rejected even though its key is a ULID.
+	Digest string `json:"sha256,omitempty"`
 }
 type Options struct {
 	TempDir string
@@ -159,10 +161,17 @@ func Create(ctx context.Context, lister registry.Lister, store storage.Store, he
 	if err != nil && !errors.Is(err, limitReached) {
 		return Summary{}, err
 	}
-	if err := write(record{Type: "complete", Count: count}); err != nil {
+	if err := write(record{Type: "complete", Count: count, Digest: hex.EncodeToString(hash.Sum(nil))}); err != nil {
 		return Summary{}, err
 	}
-	key := keyPrefix + hex.EncodeToString(hash.Sum(nil)) + ".jsonl"
+	id, err := layout.NewULID(header.CreatedAt)
+	if err != nil {
+		return Summary{}, err
+	}
+	key, err := layout.InventoryKey(header.Registry, id)
+	if err != nil {
+		return Summary{}, err
+	}
 	if opts.LocalDir != "" {
 		if err := file.Sync(); err != nil {
 			return Summary{}, err
@@ -205,13 +214,12 @@ func Open(ctx context.Context, store storage.ReadableStore, key string, order Or
 	if err := opts.Validate(); err != nil {
 		return nil, err
 	}
-	expected := strings.TrimSuffix(strings.TrimPrefix(key, keyPrefix), ".jsonl")
-	decoded, err := hex.DecodeString(expected)
-	if err != nil || len(decoded) != sha256.Size || key != keyPrefix+hex.EncodeToString(decoded)+".jsonl" {
+	keyDir, _, ok := layout.ParseInventoryKey(key)
+	if !ok {
 		return nil, fmt.Errorf("invalid inventory key")
 	}
 	var snapshot *Snapshot
-	err = retry.Do(ctx, opts.Attempts, func() error {
+	err := retry.Do(ctx, opts.Attempts, func() error {
 		attempt, cancel := context.WithTimeout(ctx, opts.Timeout)
 		defer cancel()
 		dir, err := os.MkdirTemp(opts.TempDir, "dug-inventory-*")
@@ -230,7 +238,7 @@ func Open(ctx context.Context, store storage.ReadableStore, key string, order Or
 		}
 		defer body.Close()
 		hash := sha256.New()
-		scanner := bufio.NewScanner(io.TeeReader(io.LimitReader(body, opts.MaxBytes+1), hash))
+		scanner := bufio.NewScanner(io.LimitReader(body, opts.MaxBytes+1))
 		scanner.Buffer(make([]byte, 64<<10), maxRecordBytes+1)
 		sorter := newSorter(dir, order, opts.SortBufferBytes)
 		defer sorter.close()
@@ -254,9 +262,16 @@ func Open(ctx context.Context, store storage.ReadableStore, key string, order Or
 			if complete {
 				return retry.Permanent(fmt.Errorf("data after inventory completion"))
 			}
+			if value.Type != "complete" {
+				hash.Write(scanner.Bytes())
+				hash.Write([]byte{'\n'})
+			}
 			if line == 1 {
 				if value.Type != "header" || value.Header == nil || value.Header.SchemaVersion != 1 || value.Header.Registry == "" || value.Header.Limit < 0 || (value.Header.Provider == "") != (value.Header.Kind == "") {
 					return retry.Permanent(fmt.Errorf("invalid inventory header"))
+				}
+				if dir, err := layout.Dir(value.Header.Registry); err != nil || dir != keyDir {
+					return retry.Permanent(fmt.Errorf("inventory %s does not belong to registry %q", key, value.Header.Registry))
 				}
 				header = *value.Header
 				continue
@@ -277,6 +292,9 @@ func Open(ctx context.Context, store storage.ReadableStore, key string, order Or
 				if count != value.Count {
 					return retry.Permanent(fmt.Errorf("inventory count mismatch"))
 				}
+				if value.Digest != hex.EncodeToString(hash.Sum(nil)) {
+					return retry.Permanent(fmt.Errorf("inventory checksum mismatch"))
+				}
 				complete = true
 			default:
 				return retry.Permanent(fmt.Errorf("unexpected inventory record %q", value.Type))
@@ -292,8 +310,8 @@ func Open(ctx context.Context, store storage.ReadableStore, key string, order Or
 		if err := body.Close(); err != nil {
 			return err
 		}
-		if !complete || hex.EncodeToString(hash.Sum(nil)) != expected {
-			return retry.Permanent(fmt.Errorf("incomplete inventory or checksum mismatch"))
+		if !complete {
+			return retry.Permanent(fmt.Errorf("incomplete inventory"))
 		}
 		path, err := sorter.finish(attempt)
 		if err != nil {

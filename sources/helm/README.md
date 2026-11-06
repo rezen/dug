@@ -22,10 +22,11 @@ With no selector the plugin walks every helm package Artifact Hub indexes,
 deprecated ones included (18,942 on 2026-11-06), 60 per page, ordered by last
 update. Artifact Hub answers a sustained search rate above about one request per
 second with a bare 429, so searches are spaced two seconds apart and the index
-walk takes about ten minutes; package requests are spaced 400 ms. Because the
-catalog shifts while it is walked, the walk repeats up to three times if it comes
-up short of the reported total, warns about a small remaining gap and fails on a
-large one. An explicitly requested chart that is missing, or whose current
+walk takes about ten minutes; package requests are spaced 400 ms. The catalog
+shifts while it is walked: a chart updated mid-walk jumps to the front of the
+update ordering and is missed, so the first 180 results are read again, up to
+three times, until they add nothing new. A small remaining gap against the
+reported total is a warning and a large one is an error. An explicitly requested chart that is missing, or whose current
 version cannot be archived, is an error; during a walk such versions are skipped
 with a warning. Private repositories and packages Artifact Hub does not index
 are not covered.

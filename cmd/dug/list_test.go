@@ -93,7 +93,7 @@ func TestListShowsEntriesAndLocalInventory(t *testing.T) {
 					t.Fatalf("incorrect summary: %+v", summary)
 				}
 			}
-			if format != "summary" && (!strings.Contains(logs.String(), files[0]) || !strings.Contains(logs.String(), "s3://test/dug/inventories/sha256/")) {
+			if format != "summary" && (!strings.Contains(logs.String(), files[0]) || !strings.Contains(logs.String(), "s3://test/dug/wordpress/plugins/inventories/")) {
 				t.Fatalf("missing local/S3 paths: %s", logs.String())
 			}
 		})

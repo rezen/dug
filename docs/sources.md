@@ -308,9 +308,10 @@ accepts `charts` (`REPOSITORY/CHART`), `repos`, `search` and `version_depth`; `c
 cannot be combined with the other two. With no selector it walks the whole helm
 catalog, deprecated charts included (about 18,900 packages), sorted by last update.
 Artifact Hub throttles bulk search, so searches are spaced two seconds apart and a
-full walk takes about ten minutes before any chart is fetched. A walk that comes up
-far short of the reported total fails; a few charts that moved mid-walk are reported
-as a warning.
+full walk takes about ten minutes before any chart is fetched. Charts updated
+mid-walk jump to the front of that ordering, so the front is read again afterwards to
+catch them. A walk that still comes up far short of the reported total fails; a small
+gap is reported as a warning.
 
 Artifact Hub hosts no chart bytes. Each version is downloaded from its repository's
 own host, so Resolve accepts a download URL only over HTTPS to a public DNS name that
