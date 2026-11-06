@@ -5,9 +5,11 @@ How `list`, `download`, and `sync` fit together, and how downloads are prioritiz
 `list` streams a table of names, versions, providers, catalog kinds, and registry
 IDs to stdout. WordPress rows explicitly distinguish provider `wordpress`, kind
 `plugins` from kind `themes`. It fetches metadata only, with no artifact downloads.
-On success it saves an identical JSONL inventory (header, references, completion
-count) to S3 (`<registry>/<type>/inventories/<ulid>.jsonl`, see
-[storage](storage.md)) and `.local/inventories/<ulid>.jsonl`, then prints the absolute local
+While listing runs it uploads the inventory to S3 in JSONL parts
+(`<registry>/<type>/inventories/<ulid>/part-NNNNNN.jsonl`, `--inventory-part-entries`
+entries each, see [storage](storage.md)) and commits it with `complete.json` once
+listing finishes. It also keeps the concatenated records (header and references) at
+`.local/inventories/<ulid>.jsonl`, then prints the absolute local
 path and S3 URI to stderr. Use `--inventory-dir DIR` to choose the local directory.
 The header records the registry, provider and kind (when advertised), query
 options, timestamp, and selection limit. Older plugins show `-` for unknown
@@ -22,12 +24,15 @@ not a directory of downloaded archives. `download --inventory` still takes the
 S3 inventory key, not a local path.
 
 Displayed rows are provisional until listing completes. If discovery or row
-output fails, no inventory is published and its temporary local file is removed;
-rerunning stage one re-enumerates.
+output fails, there is no `complete.json`, so the inventory is not complete and
+`last_run` is not updated; the temporary local file is removed. The parts already
+uploaded stay in S3 and the failure log names their key. Rerunning stage one
+re-enumerates from the start, or `download --inventory KEY --allow-partial` downloads
+what was saved (the listing is missing everything after the last uploaded part).
 For `list`, `--limit` bounds inventory entries and is recorded in its header.
 
-`download --inventory KEY` validates the saved object's SHA-256, record structure,
-and completion count before scheduling anything. It reuses saved query options
+`download --inventory KEY` validates each part's size, SHA-256 and entry count against
+`complete.json`, plus record structure and the total count, before scheduling anything. It reuses saved query options
 and never calls discovery. Run it again with the same key to resume, or choose a
 different order or filter. `--option` and `--version-depth` belong to stage one.
 `download` and `sync` apply `--limit` to matching versions after ordering and

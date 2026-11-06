@@ -127,8 +127,8 @@ func TestSeparateStagesDownloadInOrderWithoutRediscovery(t *testing.T) {
 	source.mu.Lock()
 	downloaded := len(source.downloads)
 	source.mu.Unlock()
-	// One inventory plus its last_run pointer.
-	if downloaded != 0 || len(store.Objects()) != 2 {
+	// One inventory part, its complete.json, and the last_run pointer.
+	if downloaded != 0 || len(store.Objects()) != 3 {
 		t.Fatal("stage one downloaded artifacts")
 	}
 	args = []string{"download", "test", "--bucket", "test", "--plugin-url", server.URL, "--inventory", summary.Key, "--order", "name", "--concurrency", "1", "--downloads", "1"}

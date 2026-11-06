@@ -117,8 +117,9 @@ func Segment(s string) (string, error) {
 
 const inventoryDir = "/inventories/"
 
-// InventoryKey is where the complete stage-one inventory with the given ULID
-// lives for a registry. ULIDs sort by creation time.
+// InventoryKey is the directory key of one inventory for a registry:
+// <registry>/<type>/inventories/<ulid>. It holds part-NNNNNN.jsonl segments and
+// a complete.json commit record. ULIDs sort by creation time.
 func InventoryKey(registryID, ulid string) (string, error) {
 	if !ValidULID(ulid) {
 		return "", fmt.Errorf("invalid inventory id %q", ulid)
@@ -127,19 +128,19 @@ func InventoryKey(registryID, ulid string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return dir + inventoryDir + ulid + ".jsonl", nil
+	return dir + inventoryDir + ulid, nil
 }
 
-// ParseInventoryKey splits "<registry>/<type>/inventories/<ulid>.jsonl" into
+// ParseInventoryKey splits "<registry>/<type>/inventories/<ulid>" into
 // "<registry>/<type>" and the ULID. It checks shape only; callers must confirm
-// the directory matches the registry named in the inventory header.
+// the directory matches the registry named in the inventory.
 func ParseInventoryKey(key string) (dir, ulid string, ok bool) {
 	i := strings.Index(key, inventoryDir)
-	if i < 0 || !strings.HasSuffix(key, ".jsonl") {
+	if i < 0 {
 		return "", "", false
 	}
 	dir = key[:i]
-	ulid = strings.TrimSuffix(key[i+len(inventoryDir):], ".jsonl")
+	ulid = key[i+len(inventoryDir):]
 	if !ValidULID(ulid) {
 		return "", "", false
 	}

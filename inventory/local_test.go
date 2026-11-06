@@ -32,14 +32,14 @@ func TestCreateRetainsCompleteLocalInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(local, store.Objects()[summary.Key]) {
-		t.Fatal("local and remote inventories differ")
+	if !bytes.Equal(local, store.Objects()[summary.Key+"/"+partName(1)]) {
+		t.Fatal("local inventory differs from the uploaded part")
 	}
-	if filepath.Base(summary.LocalPath) != path.Base(summary.Key) {
+	if filepath.Base(summary.LocalPath) != path.Base(summary.Key)+".jsonl" {
 		t.Fatal("local filename does not match the stored inventory id")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(local))
-	for _, kind := range []string{"header", "entry", "complete"} {
+	for _, kind := range []string{"header", "entry"} {
 		var value record
 		if err := decoder.Decode(&value); err != nil || value.Type != kind {
 			t.Fatalf("expected %s record, got %+v (%v)", kind, value, err)

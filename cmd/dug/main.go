@@ -58,7 +58,9 @@ Stage 2 (download): sort that inventory and download without listing again.
 sync runs both stages with a completion barrier between them.
 sync reuses the last completed inventory for the same registry, --option values
 and --list-limit; --rediscover (or --inventory KEY) overrides. With no prior run
-it lists first. list and sync record that last run in S3 under <registry>/<type>/last_run/.
+it lists first. Listing uploads the inventory in parts as it runs and commits it
+with complete.json; if it is interrupted, download --inventory KEY --allow-partial
+uses the saved parts. list and sync record that last run in S3 under <registry>/<type>/last_run/.
 
 List output: --format table (default), jsonl (references), or summary (JSON).
 Local inventories: --inventory-dir .local/inventories (default).
@@ -188,16 +190,18 @@ func executeWithStore(ctx context.Context, args []string, stdout, stderr io.Writ
 	listLimit := flags.Int("list-limit", 0, "Maximum inventory entries for sync (0 = full catalog)")
 	where := flags.String("where", "", "Filter joined by AND, e.g. downloads > 20 AND updated >= 2025-01-01")
 	versionDepth := flags.String("version-depth", "", "Stage-one version selection: positive integer, YYYY-MM-DD cutoff, or unlimited")
+	inventoryOpts := inventory.DefaultOptions()
 	inventoryKey := flags.String("inventory", "", "Saved inventory key for stage two (relative to S3 prefix)")
+	flags.BoolVar(&inventoryOpts.AllowPartial, "allow-partial", false, "download/sync with --inventory: use an inventory whose listing was interrupted (no complete.json), covering only what was saved")
 	rediscover := flags.Bool("rediscover", false, "sync: list the catalog again instead of reusing the last run's inventory")
 	orderSpec := flags.String("order", "discovery", "Download order: discovery, name, updated, popular, downloads, rating, released, a fact path such as downloads.week, metadata:KEY, number:KEY")
-	inventoryOpts := inventory.DefaultOptions()
 	listFormat := "table"
 	if command == "list" {
 		flags.StringVar(&listFormat, "format", "table", "List output: table, jsonl (references), or summary (JSON)")
 		flags.StringVar(&inventoryOpts.LocalDir, "inventory-dir", ".local/inventories", "Directory for completed local JSONL inventories")
 	}
 	flags.Int64Var(&inventoryOpts.MaxBytes, "max-inventory-bytes", inventoryOpts.MaxBytes, "Maximum serialized inventory size")
+	flags.IntVar(&inventoryOpts.PartEntries, "inventory-part-entries", inventoryOpts.PartEntries, "Entries per uploaded inventory part; parts upload while listing runs so an interrupted listing keeps what it saved")
 	flags.IntVar(&inventoryOpts.SortBufferBytes, "sort-buffer-bytes", inventoryOpts.SortBufferBytes, "Approximate encoded metadata bytes per sorting run")
 	quiet := flags.Bool("quiet", false, "Suppress progress and per-resource completion/skip logs (failures are still logged)")
 	s3opts := storage.S3Options{}
@@ -358,6 +362,9 @@ func executeWithStore(ctx context.Context, args []string, stdout, stderr io.Writ
 		summary, err := inventory.Create(ctx, remote, store, header, inventoryOpts)
 		stopListing()
 		if err != nil {
+			if summary.Key != "" {
+				logger.Warn("listing interrupted; saved parts remain", "key", summary.Key, "entries", summary.Entries, "resume_with", "download --inventory KEY --allow-partial")
+			}
 			return fmt.Errorf("stage one listing: %w", err)
 		}
 		// The inventory is already durable; a missing pointer only costs a
@@ -376,6 +383,9 @@ func executeWithStore(ctx context.Context, args []string, stdout, stderr io.Writ
 		return fmt.Errorf("load inventory: %w", err)
 	}
 	defer snapshot.Close()
+	if snapshot.Partial {
+		logger.Warn("using a partial inventory: its listing was interrupted, so entries after the last saved part are missing", "key", *inventoryKey, "entries", snapshot.Summary.Entries)
+	}
 	if snapshot.Header.Registry != kind {
 		return fmt.Errorf("inventory belongs to registry %q, not %q", snapshot.Header.Registry, kind)
 	}

@@ -42,7 +42,7 @@ func TestInventoryKeyRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	key, err := InventoryKey("wordpress-themes", id)
-	if err != nil || key != "wordpress/themes/inventories/"+id+".jsonl" {
+	if err != nil || key != "wordpress/themes/inventories/"+id {
 		t.Fatalf("%q %v", key, err)
 	}
 	dir, got, ok := ParseInventoryKey(key)
@@ -50,7 +50,7 @@ func TestInventoryKeyRoundTrip(t *testing.T) {
 		t.Fatalf("%q %q %v", dir, got, ok)
 	}
 	const valid = "01JC8ZQ4M0AAAAAAAAAAAAAAAA"
-	for _, bad := range []string{"inventories/" + valid + ".jsonl", "../x/inventories/" + valid + ".jsonl", "a/b/c/inventories/" + valid + ".jsonl", "a/b/inventories/" + valid + ".json", "a/b/inventories/sha256/ab.jsonl", "a/%2e%2e/inventories/" + valid + ".jsonl", "a/b/inventories/" + strings.ToLower(valid) + ".jsonl"} {
+	for _, bad := range []string{"inventories/" + valid, "../x/inventories/" + valid, "a/b/c/inventories/" + valid, "a/b/inventories/" + valid + ".jsonl", "a/b/inventories/" + valid + "/part-000001.jsonl", "a/b/inventories/sha256/ab.jsonl", "a/%2e%2e/inventories/" + valid, "a/b/inventories/" + strings.ToLower(valid)} {
 		if _, _, ok := ParseInventoryKey(bad); ok {
 			t.Errorf("%q parsed", bad)
 		}

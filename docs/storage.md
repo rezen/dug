@@ -12,7 +12,9 @@ comes from the registry identity (`internal/layout`): `wordpress` is
 s3://BUCKET/PREFIX/<registry>/<type>/
   artifacts/<name>/<version>/<blob name>   # the downloaded files, as-is
   artifacts/<name>/<version>/manifest.json # completion record, written last
-  inventories/<ulid>.jsonl                 # complete stage-one inventory, sorted by time
+  inventories/<ulid>/part-000001.jsonl     # stage-one inventory, uploaded in parts while listing
+  inventories/<ulid>/part-000002.jsonl
+  inventories/<ulid>/complete.json         # commit record: parts, sizes, SHA-256s, entry count
   last_run/<hash>.json                     # latest inventory per query
 
 e.g. wordpress/plugins/artifacts/akismet/5.3/akismet.5.3.zip
@@ -40,7 +42,7 @@ seen again with a different resolved revision (a moving branch, a republished
 version), its files and manifest are replaced in place; the same revision is skipped. Rerunning the
 `download --inventory KEY` command skips completed manifests without discovery.
 Rerunning `sync` creates a fresh inventory and then skips completed versions.
-Stage-one listing itself restarts from the beginning after interruption. A manifest whose revision matches is trusted, so avoid
+Stage-one listing itself restarts from the beginning after interruption; its saved parts remain usable with `--allow-partial`. A manifest whose revision matches is trusted, so avoid
 deleting files next to it. Use `--refresh` to bypass completion checks and
 download and overwrite a version's files again.
 
