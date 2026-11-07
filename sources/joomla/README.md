@@ -32,4 +32,5 @@ Local development uses the workspace's unpublished SDK. To extract this source,
 publish and pin an SDK version, move this directory, and update its module path
 and command self-import. No host changes are needed.
 
-API reference: TODO(joomla): URL.
+API reference: the Joomla Extensions Directory is developed in the open at
+<https://github.com/joomla-projects/Joomla-Extension-Directory>.

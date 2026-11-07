@@ -14,7 +14,10 @@ go build -o dug-obsidian ./cmd/dug-obsidian
 The host connects with registry identity `obsidian` and that plugin URL.
 Options: `ids` (comma-separated plugin ids; without it the whole catalog is
 walked) and `version_depth` (positive integer, inclusive YYYY-MM-DD cutoff, or
-`unlimited`; default 1, the newest non-draft release).
+`unlimited`; default 1, the newest non-draft release). `listing_concurrency`
+(1–16, default 4) sets how many plugins' release lists are fetched at once;
+references are still emitted in catalog order. Raise it carefully: GitHub's
+secondary rate limits apply, and the shared client waits them out.
 
 Discovery reads `community-plugins.json` (about 10,000 entries) and
 `community-plugin-stats.json`, then lists each plugin's releases through the

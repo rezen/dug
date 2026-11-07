@@ -49,8 +49,14 @@ func PluginFactory(client *http.Client, kind Kind) registryplugin.Factory {
 					return nil, fmt.Errorf("page_size must be between 1 and 250")
 				}
 				source.PageSize = pageSize
+			case "listing_concurrency":
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 1 || n > 16 {
+					return nil, fmt.Errorf("listing_concurrency must be between 1 and 16")
+				}
+				source.Concurrency = n
 			default:
-				return nil, fmt.Errorf("unknown WordPress option %q (supported: search, slugs, page_size, browse, version_depth)", key)
+				return nil, fmt.Errorf("unknown WordPress option %q (supported: search, slugs, page_size, browse, version_depth, listing_concurrency)", key)
 			}
 		}
 		if len(source.Slugs) > 0 && source.Search != "" {

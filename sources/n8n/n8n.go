@@ -18,8 +18,10 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"sync"
 
 	"github.com/rezen/dug/sdk/httpx"
+	"github.com/rezen/dug/sdk/pool"
 	"github.com/rezen/dug/sdk/registry"
 	"github.com/rezen/dug/sdk/services/npm"
 )
@@ -60,6 +62,7 @@ type Source struct {
 	Keyword      string   // empty means DefaultKeyword
 	Enumerate    string   // empty means EnumerateAll
 	VersionDepth string   // empty means the current release only
+	Concurrency  int      // package lookups in flight; 0 means 4
 }
 
 var _ registry.Registry = (*Source)(nil)
@@ -82,8 +85,63 @@ func (s *Source) keyword() string {
 	return DefaultKeyword
 }
 
+const (
+	defaultWorkers = 4
+	maxConcurrency = 16
+)
+
+func (s *Source) workers() int {
+	if s.Concurrency > 0 {
+		return s.Concurrency
+	}
+	return defaultWorkers
+}
+
 // chunk is how many packages get their download counts in one lookup.
 const chunk = npm.BulkDownloadNames
+
+// job is one package to fetch and the chunk whose download counts it needs.
+type job struct {
+	name  string
+	chunk int
+}
+
+// fetched is a worker's result for one job.
+type fetched struct {
+	job
+	doc *npm.Packument
+	err error
+}
+
+// monthly looks up one chunk's download counts, once, on first call.
+type monthly func() (map[string]int64, error)
+
+// downloadCounts returns a lazy lookup per chunk of names, one request each.
+func downloadCounts(ctx context.Context, client *npm.Client, names []string) []monthly {
+	counts := make([]monthly, (len(names)+chunk-1)/chunk)
+	for c := range counts {
+		batch := names[c*chunk : min((c+1)*chunk, len(names))]
+		// One window, last-month: scoped names cost a request each, and a
+		// month is steadier for ordering than a week.
+		counts[c] = sync.OnceValues(func() (map[string]int64, error) {
+			return client.DownloadCounts(ctx, "last-month", batch)
+		})
+	}
+	return counts
+}
+
+// fetch runs on a worker. It starts this chunk's count lookup and the next
+// one's, so the counts are ready by the time the previous chunk has finished
+// emitting.
+func (s *Source) fetch(ctx context.Context, client *npm.Client, counts []monthly, j job) fetched {
+	for _, c := range []int{j.chunk, j.chunk + 1} {
+		if c < len(counts) {
+			go counts[c]()
+		}
+	}
+	doc, err := client.Packument(ctx, j.name)
+	return fetched{j, doc, err}
+}
 
 // Discover emits one reference per selected version of each package, current
 // version first. Every reference is self-resolved before emission so a listing
@@ -108,48 +166,38 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 	} else if names, searchTotal, err = s.enumerate(ctx); err != nil {
 		return err
 	}
+	if s.Concurrency < 0 || s.Concurrency > maxConcurrency {
+		return fmt.Errorf("n8n listing_concurrency must be 1–%d", maxConcurrency)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	client := s.npm()
+	counts := downloadCounts(ctx, client, names)
+	jobs := make([]job, len(names))
+	for i, name := range names {
+		jobs[i] = job{name, i / chunk}
+	}
 	found := 0
-	for start := 0; start < len(names); start += chunk {
+	// Packument fetches run concurrently; everything that emits stays on this
+	// goroutine, in package order.
+	err = pool.Ordered(ctx, s.workers(), jobs, func(ctx context.Context, j job) fetched {
+		return s.fetch(ctx, client, counts, j)
+	}, func(f fetched) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		batch := names[start:min(start+chunk, len(names))]
-		// One window, last-month: scoped names cost a request each, and a
-		// month is steadier for ordering than a week.
-		monthly, err := client.DownloadCounts(ctx, "last-month", batch)
+		by, err := counts[f.chunk]()
 		if err != nil {
 			return err
 		}
-		for _, name := range batch {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			doc, err := client.Packument(ctx, name)
-			if errors.Is(err, npm.ErrNotFound) {
-				if explicit {
-					return fmt.Errorf("n8n package %s: %w", name, err)
-				}
-				// The indexes lag npm: a package they list may be gone.
-				slog.Warn("n8n skipping package that npm no longer serves", "package", name, "error", err)
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			if !explicit && !slices.Contains(registry.NormalizeTags(doc.Keywords), s.keyword()) {
-				slog.Warn("n8n skipping package that no longer carries the keyword", "package", name, "keyword", s.keyword())
-				continue
-			}
+		emitted, err := s.emitFetched(ctx, f, by, explicit, depth, emit)
+		if emitted {
 			found++
-			var month *int64
-			if n, ok := monthly[name]; ok {
-				month = registry.Int64(n)
-			}
-			if err := s.emitVersions(ctx, name, doc, month, depth, emit); err != nil {
-				return err
-			}
 		}
+		return err
+	})
+	if err != nil {
+		return err
 	}
 	if !explicit && searchTotal > found {
 		// Neither index is exhaustive, so a gap is expected, never silent.
@@ -157,6 +205,32 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 			"found", found, "npm_search_total", searchTotal, "keyword", s.keyword(), "enumerate", s.mode())
 	}
 	return nil
+}
+
+// emitFetched emits one fetched package and reports whether it was a package
+// the walk counts as found.
+func (s *Source) emitFetched(ctx context.Context, f fetched, monthly map[string]int64, explicit bool, depth registry.VersionDepth, emit func(registry.Reference) error) (bool, error) {
+	name := f.name
+	if errors.Is(f.err, npm.ErrNotFound) {
+		if explicit {
+			return false, fmt.Errorf("n8n package %s: %w", name, f.err)
+		}
+		// The indexes lag npm: a package they list may be gone.
+		slog.Warn("n8n skipping package that npm no longer serves", "package", name, "error", f.err)
+		return false, nil
+	}
+	if f.err != nil {
+		return false, f.err
+	}
+	if !explicit && !slices.Contains(registry.NormalizeTags(f.doc.Keywords), s.keyword()) {
+		slog.Warn("n8n skipping package that no longer carries the keyword", "package", name, "keyword", s.keyword())
+		return false, nil
+	}
+	var month *int64
+	if n, ok := monthly[name]; ok {
+		month = registry.Int64(n)
+	}
+	return true, s.emitVersions(ctx, name, f.doc, month, depth, emit)
 }
 
 // emitVersions emits the current version first, then older versions newest

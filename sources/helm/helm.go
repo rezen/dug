@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/rezen/dug/sdk/httpx"
+	"github.com/rezen/dug/sdk/pool"
 	"github.com/rezen/dug/sdk/registry"
 	"github.com/rezen/dug/sdk/retry"
 	"github.com/rezen/dug/sdk/services/artifacthub"
@@ -46,6 +47,10 @@ const (
 	// catchUpPasses times, to pick up charts updated while it ran.
 	catchUpPasses = 3
 	catchUpRows   = 180
+	// Package lookups in flight during a walk. The hub client still spaces
+	// requests by Interval, so this hides latency rather than raising the rate.
+	defaultWorkers = 4
+	maxConcurrency = 16
 )
 
 type Source struct {
@@ -59,6 +64,7 @@ type Source struct {
 	// SearchInterval between search requests; 0 means 400ms and 2s.
 	Interval       time.Duration
 	SearchInterval time.Duration
+	Concurrency    int // package lookups in flight; 0 means 4
 
 	// Query options. PluginFactory validates them; Discover re-checks what it
 	// relies on because a Source can also be constructed directly.
@@ -79,6 +85,13 @@ var (
 	// the OCI source covers. A walk skips the whole chart and counts it.
 	errOCIChart = fmt.Errorf("%w: published to an OCI registry", errUnarchivable)
 )
+
+func (s *Source) workers() int {
+	if s.Concurrency > 0 {
+		return s.Concurrency
+	}
+	return defaultWorkers
+}
 
 func (s *Source) attempts() int {
 	if s.Attempts > 0 {
@@ -131,9 +144,80 @@ func validVersion(version string) error {
 	return nil
 }
 
+// chartResult is what one worker collected for a chart. Workers never call
+// emit: the references travel back so the yield side emits them in search order
+// from a single goroutine.
+type chartResult struct {
+	id  string // package ID, empty when the chart was skipped
+	oci bool
+	pool.Collected[registry.Reference]
+}
+
+func failed(err error) chartResult {
+	return chartResult{Collected: pool.Collected[registry.Reference]{Err: err}}
+}
+
+// collect fetches one chart and gathers its selected versions. During a walk
+// (strict false) a chart that vanished is skipped with a warning and an
+// OCI-hosted chart is flagged; an explicit chart fails on both.
+func (s *Source) collect(ctx context.Context, hub *artifacthub.Client, repo, chart string, stars int64, strict bool, depth registry.VersionDepth) chartResult {
+	doc, err := hub.Package(ctx, repo, chart)
+	if !strict && errors.Is(err, artifacthub.ErrNotFound) {
+		// Removed between the search and this lookup.
+		slog.Warn("helm chart disappeared during the walk", "chart", repo+"/"+chart)
+		return chartResult{}
+	}
+	if err != nil {
+		if strict {
+			err = fmt.Errorf("%s/%s: %w", repo, chart, err)
+		}
+		return failed(err)
+	}
+	r := chartResult{id: doc.ID}
+	r.Collected = pool.Collect(func(add func(registry.Reference) error) error {
+		return s.emitVersions(ctx, hub, doc, stars, strict, depth, add)
+	})
+	if errors.Is(r.Err, errOCIChart) && !strict {
+		r.oci, r.Err = true, nil
+	}
+	return r
+}
+
+// lookup is the walk's worker: one search result becomes one chart's references.
+func (s *Source) lookup(ctx context.Context, hub *artifacthub.Client, e artifacthub.Package, depth registry.VersionDepth) chartResult {
+	if strings.HasPrefix(strings.ToLower(e.Repository.URL), "oci:") {
+		return chartResult{oci: true}
+	}
+	repo, chart := e.Repository.Name, e.NormalizedName
+	if err := validPart("repository", repo); err != nil {
+		return failed(err)
+	}
+	if err := validPart("chart", chart); err != nil {
+		return failed(err)
+	}
+	return s.collect(ctx, hub, repo, chart, e.Stars, false, depth)
+}
+
+// explicit looks up the selected charts, failing on any that cannot be listed.
+func (s *Source) explicit(ctx context.Context, hub *artifacthub.Client, depth registry.VersionDepth, yield func(chartResult) error) error {
+	type chart struct{ repo, name string }
+	charts := make([]chart, 0, len(s.Charts))
+	for _, name := range s.Charts {
+		repo, c, err := splitChart(name)
+		if err != nil {
+			return err
+		}
+		charts = append(charts, chart{repo, c})
+	}
+	return pool.Ordered(ctx, s.workers(), charts, func(ctx context.Context, c chart) chartResult {
+		return s.collect(ctx, hub, c.repo, c.name, 0, true, depth)
+	}, yield)
+}
+
 // Discover emits one reference per selected chart version: the explicit
 // charts, or every chart Artifact Hub lists. Every reference is self-resolved
 // before emission so a listing never persists something stage two would reject.
+// Package lookups run concurrently but results are emitted in listing order.
 func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) error) error {
 	depth, err := registry.ParseVersionDepth(s.VersionDepth)
 	if err != nil {
@@ -142,69 +226,35 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 	if len(s.Charts) > 0 && (len(s.Repos) > 0 || s.Search != "") {
 		return fmt.Errorf("use charts, or repos and search, not both")
 	}
+	if s.Concurrency < 0 || s.Concurrency > maxConcurrency {
+		return fmt.Errorf("helm listing_concurrency must be 1–%d", maxConcurrency)
+	}
 	hub := s.hub()
 	seen := make(map[string]bool)
-	if len(s.Charts) > 0 {
-		for _, name := range s.Charts {
-			repo, chart, err := splitChart(name)
-			if err != nil {
-				return err
-			}
-			doc, err := hub.Package(ctx, repo, chart)
-			if err != nil {
-				return fmt.Errorf("%s: %w", name, err)
-			}
-			if seen[doc.ID] {
-				continue
-			}
-			seen[doc.ID] = true
-			if err := s.emitVersions(ctx, hub, doc, 0, true, depth, emit); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
 	ociSkipped := 0
-	// Charts are processed as the search yields them: the host gives up on a
-	// stream whose first reference takes over a minute, and the walk takes ten.
-	visit := func(e artifacthub.Package) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if strings.HasPrefix(strings.ToLower(e.Repository.URL), "oci:") {
+	yield := func(r chartResult) error {
+		if r.oci {
 			ociSkipped++
-			return nil
 		}
-		repo, chart := e.Repository.Name, e.NormalizedName
-		if err := validPart("repository", repo); err != nil {
-			return err
-		}
-		if err := validPart("chart", chart); err != nil {
-			return err
-		}
-		doc, err := hub.Package(ctx, repo, chart)
-		if errors.Is(err, artifacthub.ErrNotFound) {
-			// Removed between the search and this lookup.
-			slog.Warn("helm chart disappeared during the walk", "chart", repo+"/"+chart)
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if seen[doc.ID] {
-			return nil
-		}
-		seen[doc.ID] = true
-		if err := s.emitVersions(ctx, hub, doc, e.Stars, false, depth, emit); err != nil {
-			if errors.Is(err, errOCIChart) {
-				ociSkipped++
+		if r.id != "" {
+			if seen[r.id] {
 				return nil
 			}
-			return err
+			seen[r.id] = true
 		}
-		return nil
+		return r.Emit(emit)
 	}
-	if err := s.catalog(ctx, hub, visit); err != nil {
+	if len(s.Charts) > 0 {
+		return s.explicit(ctx, hub, depth, yield)
+	}
+	// Charts are processed as the search yields them: the host gives up on a
+	// stream whose first reference takes over a minute, and the walk takes ten.
+	err = pool.Walk(ctx, s.workers(), func(ctx context.Context, push func(artifacthub.Package) error) error {
+		return s.catalog(ctx, hub, push)
+	}, func(ctx context.Context, e artifacthub.Package) chartResult {
+		return s.lookup(ctx, hub, e, depth)
+	}, yield)
+	if err != nil {
 		return err
 	}
 	if ociSkipped > 0 {

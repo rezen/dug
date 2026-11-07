@@ -196,3 +196,78 @@ func TestDownloadURLsMustUseMozillaHost(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestListingConcurrencyOptionValidation(t *testing.T) {
+	factory := PluginFactory(nil)
+	for _, value := range []string{"0", "17", "x", ""} {
+		if _, err := factory(map[string]string{"listing_concurrency": value}); err == nil {
+			t.Errorf("accepted listing_concurrency %q", value)
+		}
+	}
+	for _, value := range []string{"1", "16"} {
+		if _, err := factory(map[string]string{"listing_concurrency": value}); err != nil {
+			t.Errorf("rejected listing_concurrency %q: %v", value, err)
+		}
+	}
+	if _, err := factory(map[string]string{"nope": "1"}); err == nil || !strings.Contains(err.Error(), "listing_concurrency") {
+		t.Errorf("unknown-option error does not list listing_concurrency: %v", err)
+	}
+}
+
+func TestListingConcurrencyOverlapsVersionWalksInSearchOrder(t *testing.T) {
+	const n = 12
+	var want []string
+	for i := 1; i <= n; i++ {
+		want = append(want, fmt.Sprintf("addon-%02d@%d", i, i*10), fmt.Sprintf("addon-%02d@%d", i, i*10+1))
+	}
+	for _, workers := range []int{1, 4} {
+		t.Run(fmt.Sprint("workers=", workers), func(t *testing.T) {
+			var inflight, peak atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				base := "http://" + r.Host
+				if r.URL.Path == "/api/v5/addons/search/" {
+					var results []addon
+					for i := 1; i <= n; i++ {
+						results = append(results, addon{ID: int64(i), Slug: fmt.Sprintf("addon-%02d", i), Type: "extension", Current: testVersion(int64(i*10), "2026-01-01T00:00:00Z", base)})
+					}
+					json.NewEncoder(w).Encode(page[addon]{Count: n, Results: results})
+					return
+				}
+				var id int
+				if _, err := fmt.Sscanf(r.URL.Path, "/api/v5/addons/addon/%d/versions/", &id); err != nil {
+					http.NotFound(w, r)
+					return
+				}
+				cur := inflight.Add(1)
+				defer inflight.Add(-1)
+				for p := peak.Load(); cur > p && !peak.CompareAndSwap(p, cur); p = peak.Load() {
+				}
+				// Earlier add-ons answer slowest, so only in-order emission
+				// keeps the search order.
+				time.Sleep(time.Duration(n-id) * 5 * time.Millisecond)
+				json.NewEncoder(w).Encode(page[version]{Count: 1, Results: []version{testVersion(int64(id*10+1), "2025-01-01T00:00:00Z", base)}})
+			}))
+			defer server.Close()
+			// Unlimited depth sends every add-on through the versions walk, which
+			// the pool runs ahead of the emitter; the current version comes first.
+			s := &Source{Client: server.Client(), Endpoint: server.URL + "/api/v5/", VersionDepth: "unlimited", Attempts: 1, Concurrency: workers, DownloadHosts: []string{strings.TrimPrefix(server.URL, "http://")}}
+			var got []string
+			err := s.Discover(context.Background(), func(ref registry.Reference) error {
+				got = append(got, ref.Name+"@"+ref.Version)
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("got %v, want search order %v", got, want)
+			}
+			if workers == 1 && peak.Load() != 1 {
+				t.Fatalf("one worker overlapped %d version walks", peak.Load())
+			}
+			if workers == 4 && (peak.Load() < 2 || peak.Load() > 6) {
+				t.Fatalf("peak overlap %d with 4 workers, want bounded concurrency above 1", peak.Load())
+			}
+		})
+	}
+}

@@ -4,12 +4,12 @@ import "testing"
 
 func TestPluginOptions(t *testing.T) {
 	factory := PluginFactory(nil, Plugins)
-	for _, options := range []map[string]string{{"unknown": "x"}, {"page_size": "251"}, {"page_size": "bad"}, {"slugs": "a,"}, {"search": "a", "slugs": "b"}, {"browse": "featured"}} {
+	for _, options := range []map[string]string{{"unknown": "x"}, {"page_size": "251"}, {"page_size": "bad"}, {"slugs": "a,"}, {"search": "a", "slugs": "b"}, {"browse": "featured"}, {"listing_concurrency": "0"}, {"listing_concurrency": "17"}, {"listing_concurrency": "x"}} {
 		if _, err := factory(options); err == nil {
 			t.Fatalf("accepted invalid options %v", options)
 		}
 	}
-	for _, options := range []map[string]string{nil, {"search": "shop"}, {"slugs": "akismet, wordpress-seo", "page_size": "25"}, {"browse": "popular"}} {
+	for _, options := range []map[string]string{nil, {"search": "shop"}, {"slugs": "akismet, wordpress-seo", "page_size": "25"}, {"browse": "popular"}, {"listing_concurrency": "1"}, {"listing_concurrency": "16"}} {
 		if _, err := factory(options); err != nil {
 			t.Fatalf("rejected options %v: %v", options, err)
 		}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/rezen/dug/sdk/plugin"
@@ -48,8 +49,14 @@ func PluginFactory(client *http.Client) plugin.Factory {
 					return nil, err
 				}
 				s.VersionDepth = value
+			case "listing_concurrency":
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 1 || n > maxConcurrency {
+					return nil, fmt.Errorf("n8n listing_concurrency must be 1–%d", maxConcurrency)
+				}
+				s.Concurrency = n
 			default:
-				return nil, fmt.Errorf("unknown n8n option %q (supported: packages, keyword, enumerate, version_depth)", key)
+				return nil, fmt.Errorf("unknown n8n option %q (supported: packages, keyword, enumerate, version_depth, listing_concurrency)", key)
 			}
 		}
 		if len(s.Packages) > 0 && (hasKeyword || hasEnumerate) {

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/rezen/dug/sdk/httpx"
+	"github.com/rezen/dug/sdk/pool"
 	"github.com/rezen/dug/sdk/registry"
 )
 
@@ -94,6 +95,7 @@ type Source struct {
 	Kind         Kind
 	Endpoint     string
 	PageSize     int
+	Concurrency  int // items whose version history is fetched in flight when version_depth is not 1; 0 means 4
 	Search       string
 	Slugs        []string
 	Attempts     int
@@ -284,90 +286,34 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 	if s.PageSize < 1 || s.PageSize > 250 {
 		return fmt.Errorf("WordPress page size must be between 1 and 250")
 	}
-	emitItem := func(p item) error {
-		if p.Error != "" {
-			return fmt.Errorf("WordPress API: %s", p.Error)
-		}
-		if p.Slug == "" || p.Version == "" || p.DownloadLink == "" {
-			return fmt.Errorf("incomplete WordPress %s metadata for %q", dir.item, p.Slug)
-		}
-		if err := s.validateDownloadURL(p.DownloadLink); err != nil {
-			return err
-		}
-		// Typed facts carry the cross-registry metrics; metadata keeps the
-		// WordPress-specific ones. WordPress.org hosts every plugin and theme
-		// in its own SVN, which is the canonical source repository.
-		metadata := make(map[string]string)
-		facts := &registry.Facts{Repository: &registry.Repository{URL: dir.svn + "/" + p.Slug, Source: registry.RepositoryRegistry}}
-	updated:
-		for _, raw := range []string{p.LastUpdatedTime, p.LastUpdated} {
-			if raw == "" {
-				continue
-			}
-			for _, layout := range []string{time.RFC3339, "2006-01-02 3:04pm MST", "2006-01-02 15:04:05", "2006-01-02"} {
-				if updated, err := time.Parse(layout, raw); err == nil {
-					facts.UpdatedAt = registry.Time(updated)
-					break updated
-				}
-			}
-		}
-		if p.Template != "" {
-			metadata["template"] = p.Template
-		}
-		if p.ActiveInstalls != nil {
-			facts.Installs = registry.Int64(*p.ActiveInstalls)
-		}
-		if p.Downloaded != nil {
-			// The directory publishes one all-time count per plugin or theme.
-			facts.Downloads = &registry.DownloadStats{Total: registry.Int64(*p.Downloaded)}
-		}
-		if p.Rating != nil {
-			metadata["rating"] = strconv.FormatFloat(*p.Rating, 'f', -1, 64)
-		}
-		if p.NumRatings != nil {
-			metadata["num_ratings"] = strconv.FormatInt(*p.NumRatings, 10)
-		}
-		if p.Ratings != nil {
-			ratings, err := json.Marshal(p.Ratings)
-			if err != nil {
-				return err
-			}
-			metadata["ratings"] = string(ratings)
-			for stars, count := range p.Ratings {
-				metadata["ratings_"+stars] = strconv.FormatInt(count, 10)
-			}
-		}
-		tags := registry.NormalizeTags(p.Tags)
-		author := p.authorOf(dir.kind)
-		versions, err := s.selectVersions(ctx, p)
-		if err != nil {
-			return err
-		}
-		for i, v := range versions {
-			if err := s.validateDownloadURL(v.URL); err != nil {
-				return err
-			}
-			versionMetadata := maps.Clone(metadata)
-			versionMetadata["version_rank"] = strconv.Itoa(i + 1)
-			versionFacts := facts.Clone()
-			if !v.Released.IsZero() {
-				versionFacts.ReleasedAt = registry.Time(v.Released)
-				versionMetadata["release_date_source"] = "svn-tag-creation"
-			}
-			ref := registry.Reference{Registry: dir.registry, Namespace: "wordpress.org", Name: p.Slug, Version: v.Version, Attributes: map[string]string{"download_url": v.URL}, Metadata: versionMetadata, Facts: versionFacts, Tags: slices.Clone(tags), Author: author.Clone(), Raw: slices.Clone(p.raw)}
-			if err := emit(ref); err != nil {
-				return err
-			}
-		}
-		return nil
+	if _, err := registry.ParseVersionDepth(s.VersionDepth); err != nil {
+		return err
 	}
+	return pool.Walk(ctx, s.workers(),
+		func(ctx context.Context, push func(job) error) error { return s.walk(ctx, dir, push) },
+		func(ctx context.Context, j job) fetched { return s.fetch(ctx, dir, j) },
+		func(f fetched) error {
+			if f.err != nil {
+				return f.err
+			}
+			return s.emitItem(ctx, dir, f.item, f.selection, emit)
+		})
+}
+
+// job is one directory item to emit: either listed already, or named by slug
+// and still to be fetched.
+type job struct {
+	item item
+	slug string
+}
+
+// walk pushes the selected items in order. The walk is serial, so pages stay in
+// order; pushing hands each item to the pool, so history lookups overlap with
+// the rest of the walk.
+func (s *Source) walk(ctx context.Context, dir directory, push func(job) error) error {
 	if len(s.Slugs) > 0 {
 		for _, slug := range s.Slugs {
-			var result item
-			if err := s.query(ctx, url.Values{"action": {dir.information}, "request[slug]": {slug}}, &result); err != nil {
-				return err
-			}
-			if err := emitItem(result); err != nil {
+			if err := push(job{slug: slug}); err != nil {
 				return err
 			}
 		}
@@ -401,7 +347,7 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 			items = result.Themes
 		}
 		for _, p := range items {
-			if err := emitItem(p); err != nil {
+			if err := push(job{item: p}); err != nil {
 				return err
 			}
 		}
@@ -409,6 +355,131 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 			return nil
 		}
 	}
+}
+
+// fetch looks up a named item and computes its version selection. Any depth
+// above 1 reads the version catalog and may query SVN for release dates; those
+// requests run here, ahead of the emitter. Depth 1 makes none.
+func (s *Source) fetch(ctx context.Context, dir directory, j job) fetched {
+	f := fetched{item: j.item}
+	if j.slug != "" {
+		if f.err = s.query(ctx, url.Values{"action": {dir.information}, "request[slug]": {j.slug}}, &f.item); f.err != nil {
+			return f
+		}
+	}
+	f.selection = s.prefetch(ctx, f.item)
+	return f
+}
+
+// emitItem emits one reference per selected version of a directory item. sel
+// is the version selection computed ahead of the emitter.
+func (s *Source) emitItem(ctx context.Context, dir directory, p item, sel selection, emit func(registry.Reference) error) error {
+	if p.Error != "" {
+		return fmt.Errorf("WordPress API: %s", p.Error)
+	}
+	if p.Slug == "" || p.Version == "" || p.DownloadLink == "" {
+		return fmt.Errorf("incomplete WordPress %s metadata for %q", dir.item, p.Slug)
+	}
+	if err := s.validateDownloadURL(p.DownloadLink); err != nil {
+		return err
+	}
+	// Typed facts carry the cross-registry metrics; metadata keeps the
+	// WordPress-specific ones. WordPress.org hosts every plugin and theme
+	// in its own SVN, which is the canonical source repository.
+	metadata := make(map[string]string)
+	facts := &registry.Facts{Repository: &registry.Repository{URL: dir.svn + "/" + p.Slug, Source: registry.RepositoryRegistry}}
+updated:
+	for _, raw := range []string{p.LastUpdatedTime, p.LastUpdated} {
+		if raw == "" {
+			continue
+		}
+		for _, layout := range []string{time.RFC3339, "2006-01-02 3:04pm MST", "2006-01-02 15:04:05", "2006-01-02"} {
+			if updated, err := time.Parse(layout, raw); err == nil {
+				facts.UpdatedAt = registry.Time(updated)
+				break updated
+			}
+		}
+	}
+	if p.Template != "" {
+		metadata["template"] = p.Template
+	}
+	if p.ActiveInstalls != nil {
+		facts.Installs = registry.Int64(*p.ActiveInstalls)
+	}
+	if p.Downloaded != nil {
+		// The directory publishes one all-time count per plugin or theme.
+		facts.Downloads = &registry.DownloadStats{Total: registry.Int64(*p.Downloaded)}
+	}
+	if p.Rating != nil {
+		metadata["rating"] = strconv.FormatFloat(*p.Rating, 'f', -1, 64)
+	}
+	if p.NumRatings != nil {
+		metadata["num_ratings"] = strconv.FormatInt(*p.NumRatings, 10)
+	}
+	if p.Ratings != nil {
+		ratings, err := json.Marshal(p.Ratings)
+		if err != nil {
+			return err
+		}
+		metadata["ratings"] = string(ratings)
+		for stars, count := range p.Ratings {
+			metadata["ratings_"+stars] = strconv.FormatInt(count, 10)
+		}
+	}
+	tags := registry.NormalizeTags(p.Tags)
+	author := p.authorOf(dir.kind)
+	if sel.err != nil {
+		return sel.err
+	}
+	for i, v := range sel.versions {
+		if err := s.validateDownloadURL(v.URL); err != nil {
+			return err
+		}
+		versionMetadata := maps.Clone(metadata)
+		versionMetadata["version_rank"] = strconv.Itoa(i + 1)
+		versionFacts := facts.Clone()
+		if !v.Released.IsZero() {
+			versionFacts.ReleasedAt = registry.Time(v.Released)
+			versionMetadata["release_date_source"] = "svn-tag-creation"
+		}
+		ref := registry.Reference{Registry: dir.registry, Namespace: "wordpress.org", Name: p.Slug, Version: v.Version, Attributes: map[string]string{"download_url": v.URL}, Metadata: versionMetadata, Facts: versionFacts, Tags: slices.Clone(tags), Author: author.Clone(), Raw: slices.Clone(p.raw)}
+		if err := emit(ref); err != nil {
+			return err
+		}
+	}
+	return nil
+
+}
+
+func (s *Source) workers() int {
+	if s.Concurrency > 0 {
+		return s.Concurrency
+	}
+	return 4
+}
+
+// selection is the outcome of selectVersions, computed ahead of the emitter.
+type selection struct {
+	versions []release
+	err      error
+}
+
+// fetched is one item with its precomputed selection; err is a failed lookup
+// of the item itself.
+type fetched struct {
+	item item
+	selection
+	err error
+}
+
+// prefetch runs selectVersions for an item emitItem will accept. An item it
+// would reject gets an empty selection, never used because emitItem fails first.
+func (s *Source) prefetch(ctx context.Context, p item) selection {
+	if p.Error != "" || p.Slug == "" || p.Version == "" || p.DownloadLink == "" {
+		return selection{}
+	}
+	versions, err := s.selectVersions(ctx, p)
+	return selection{versions: versions, err: err}
 }
 
 func (s *Source) query(ctx context.Context, params url.Values, output any) error {

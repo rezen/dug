@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/rezen/dug/sdk/httpx"
+	"github.com/rezen/dug/sdk/pool"
 	"github.com/rezen/dug/sdk/registry"
 	"github.com/rezen/dug/sdk/retry"
 	"github.com/rezen/dug/sdk/services"
@@ -211,7 +212,7 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 	explicit := len(s.IDs) > 0 || len(s.Slugs) > 0
 	var emitted, outOfScope int
 	found := map[string]bool{}
-	err = ordered(ctx, s.workers(), targets, s.lookup, func(r outcome) error {
+	err = pool.Ordered(ctx, s.workers(), targets, s.lookup, func(r outcome) error {
 		if r.err != nil {
 			return r.err
 		}
@@ -835,37 +836,6 @@ func (s *Source) emitVersions(ctx context.Context, ext extension, releases []rel
 		}
 	}
 	return nil
-}
-
-// ordered runs work over items with at most workers in flight and yields the
-// results in item order. It stops at the first yield error or cancellation.
-func ordered[T, R any](ctx context.Context, workers int, items []T, work func(context.Context, T) R, yield func(R) error) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	futures := make(chan chan R, workers)
-	go func() {
-		defer close(futures)
-		for _, item := range items {
-			future := make(chan R, 1)
-			select {
-			case futures <- future:
-			case <-ctx.Done():
-				return
-			}
-			go func() { future <- work(ctx, item) }()
-		}
-	}()
-	for future := range futures {
-		select {
-		case result := <-future:
-			if err := yield(result); err != nil {
-				return err
-			}
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return ctx.Err()
 }
 
 // checkManifest applies the rule for the manifest URL: HTTPS to a public DNS

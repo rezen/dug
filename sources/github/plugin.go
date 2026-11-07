@@ -68,13 +68,19 @@ func PluginFactory(client *http.Client, endpoint, token string) plugin.Factory {
 					}
 					s.Refs = append(s.Refs, ref)
 				}
+			case "listing_concurrency":
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 1 || n > MaxConcurrency {
+					return nil, fmt.Errorf("github listing_concurrency must be 1–%d", MaxConcurrency)
+				}
+				s.Concurrency = n
 			case "version_depth":
 				if _, err := registry.ParseVersionDepth(value); err != nil {
 					return nil, err
 				}
 				s.VersionDepth = value
 			default:
-				return nil, fmt.Errorf("unknown GitHub option %q (supported: repos, owner, search, forks, assets, snapshot, refs, tags, version_depth)", key)
+				return nil, fmt.Errorf("unknown GitHub option %q (supported: repos, owner, search, forks, assets, snapshot, refs, tags, version_depth, listing_concurrency)", key)
 			}
 		}
 		if err := s.validate(); err != nil {

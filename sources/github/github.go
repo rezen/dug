@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/rezen/dug/sdk/httpx"
+	"github.com/rezen/dug/sdk/pool"
 	"github.com/rezen/dug/sdk/registry"
 	"github.com/rezen/dug/sdk/retry"
 )
@@ -63,6 +64,10 @@ type Source struct {
 	Tags         bool
 	VersionDepth string
 	Attempts     int
+	// Concurrency is how many repositories are looked up (releases, tags,
+	// commits) at once; 0 means DefaultConcurrency. Search and owner paging
+	// stay serial.
+	Concurrency int
 	// CodeloadEndpoint and ReleaseEndpoint override the public download hosts
 	// (codeload.github.com and github.com) for local fixtures or a deployment
 	// that serves archives itself; they are not RPC options. Without them,
@@ -77,6 +82,13 @@ var _ registry.Registry = (*Source)(nil)
 var (
 	shaPattern    = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+)
+
+// DefaultConcurrency and MaxConcurrency bound the repository lookups in flight.
+// The default is conservative because the REST quota is shared by every lookup.
+const (
+	DefaultConcurrency = 4
+	MaxConcurrency     = 16
 )
 
 var errStop = errors.New("version depth reached")
@@ -161,6 +173,9 @@ func (s *Source) validate() error {
 	default:
 		return fmt.Errorf("github snapshot must be fallback, always, only, or never")
 	}
+	if s.Concurrency < 0 || s.Concurrency > MaxConcurrency {
+		return fmt.Errorf("github listing_concurrency must be 1–%d", MaxConcurrency)
+	}
 	modes := 0
 	for _, set := range []bool{len(s.Repos) > 0, s.Owner != "", s.Search != ""} {
 		if set {
@@ -199,8 +214,35 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 	if err != nil {
 		return err
 	}
+	// The walk stays serial and feeds the pool; each repository's lookups
+	// collect references, which are emitted here in walk order.
+	return pool.Walk(ctx, s.workers(), s.uniqueRepos,
+		func(ctx context.Context, r repo) fetched {
+			return fetched{r, pool.Collect(func(add func(registry.Reference) error) error {
+				return s.emitRepo(ctx, r, depth, add)
+			})}
+		},
+		func(f fetched) error {
+			err := f.Emit(emit)
+			if errors.Is(err, errMissing) && len(s.Repos) == 0 {
+				slog.Warn("skipping GitHub repository", "repository", f.repo.FullName, "error", err)
+				return nil
+			}
+			return err
+		})
+}
+
+// fetched is one repository's references and the error that ended its lookups.
+// References before the error are still emitted.
+type fetched struct {
+	repo repo
+	pool.Collected[registry.Reference]
+}
+
+// uniqueRepos walks the selected repositories, pushing each valid one once.
+func (s *Source) uniqueRepos(ctx context.Context, push func(repo) error) error {
 	seen := make(map[int64]bool)
-	add := func(r repo) error {
+	return s.walk(ctx, func(r repo) error {
 		if r.ID < 1 || r.DefaultBranch == "" {
 			return fmt.Errorf("invalid GitHub repository metadata for %q", r.FullName)
 		}
@@ -211,13 +253,19 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 			return nil
 		}
 		seen[r.ID] = true
-		err := s.emitRepo(ctx, r, depth, emit)
-		if errors.Is(err, errMissing) && len(s.Repos) == 0 {
-			slog.Warn("skipping GitHub repository", "repository", r.FullName, "error", err)
-			return nil
-		}
-		return err
+		return push(r)
+	})
+}
+
+func (s *Source) workers() int {
+	if s.Concurrency > 0 {
+		return s.Concurrency
 	}
+	return DefaultConcurrency
+}
+
+// walk visits the selected repositories serially.
+func (s *Source) walk(ctx context.Context, add func(repo) error) error {
 	switch {
 	case len(s.Repos) > 0:
 		for _, full := range s.Repos {

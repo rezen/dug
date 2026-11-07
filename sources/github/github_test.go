@@ -697,3 +697,72 @@ func TestNextLink(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// A repository's lookups run concurrently, bounded by listing_concurrency, while
+// references still come out in walk order even when later repositories answer first.
+func TestListingConcurrencyOverlapsLookupsAndKeepsOrder(t *testing.T) {
+	const repos = 12
+	var inflight, peak atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/bulk", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"type":"User"}`) })
+	mux.HandleFunc("/users/bulk/repos", func(w http.ResponseWriter, r *http.Request) {
+		var list []map[string]any
+		for i := 0; i < repos; i++ {
+			list = append(list, map[string]any{"id": i + 1, "full_name": fmt.Sprintf("bulk/r%02d", i), "default_branch": "main", "owner": map[string]any{"login": "bulk", "type": "User"}})
+		}
+		json.NewEncoder(w).Encode(list)
+	})
+	mux.HandleFunc("/repos/bulk/", func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		n, _ := strconv.Atoi(strings.TrimPrefix(parts[2], "r"))
+		switch parts[3] {
+		case "releases":
+			cur := inflight.Add(1)
+			for {
+				p := peak.Load()
+				if cur <= p || peak.CompareAndSwap(p, cur) {
+					break
+				}
+			}
+			time.Sleep(time.Duration(repos-n) * 5 * time.Millisecond) // later repositories finish first
+			inflight.Add(-1)
+			io.WriteString(w, `[]`)
+		case "branches":
+			fmt.Fprintf(w, `{"commit":{"sha":"%040x","commit":{"committer":{"date":"2024-01-01T00:00:00Z"}}}}`, n+1)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	api := httptest.NewServer(mux)
+	t.Cleanup(api.Close)
+	run := func(concurrency int) ([]string, int32) {
+		peak.Store(0)
+		s := &Source{Client: api.Client(), Endpoint: api.URL, Attempts: 1, Owner: "bulk", Concurrency: concurrency, CodeloadEndpoint: api.URL, ReleaseEndpoint: api.URL}
+		return versions(discover(t, s)), peak.Load()
+	}
+	want := make([]string, repos)
+	for i := range want {
+		want[i] = fmt.Sprintf("bulk/r%02d@main", i)
+	}
+	got, peakSerial := run(1)
+	if !reflect.DeepEqual(got, want) || peakSerial > 2 { // pool.Stream admits about one lookup beyond its workers
+		t.Fatalf("serial: got %v peak %d", got, peakSerial)
+	}
+	got, peakParallel := run(4)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parallel order: got %v want %v", got, want)
+	}
+	if peakParallel <= peakSerial || peakParallel > 6 {
+		t.Fatalf("peak in flight %d, want overlap bounded near 4", peakParallel)
+	}
+}
+
+func TestListingConcurrencyOption(t *testing.T) {
+	factory := PluginFactory(http.DefaultClient, "", "")
+	for value, ok := range map[string]bool{"1": true, "16": true, "0": false, "17": false, "x": false} {
+		_, err := factory(map[string]string{"repos": "acme/widget", "listing_concurrency": value})
+		if (err == nil) != ok {
+			t.Errorf("listing_concurrency=%s: err %v", value, err)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package helm
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -44,8 +45,14 @@ func PluginFactory(client *http.Client) plugin.Factory {
 					return nil, err
 				}
 				s.VersionDepth = value
+			case "listing_concurrency":
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 1 || n > maxConcurrency {
+					return nil, fmt.Errorf("helm listing_concurrency must be 1–%d", maxConcurrency)
+				}
+				s.Concurrency = n
 			default:
-				return nil, fmt.Errorf("unknown Helm option %q (supported: charts, repos, search, version_depth)", key)
+				return nil, fmt.Errorf("unknown Helm option %q (supported: charts, repos, search, version_depth, listing_concurrency)", key)
 			}
 		}
 		if len(s.Charts) > 0 && (len(s.Repos) > 0 || s.Search != "") {

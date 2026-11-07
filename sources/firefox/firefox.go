@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rezen/dug/sdk/httpx"
+	"github.com/rezen/dug/sdk/pool"
 	"github.com/rezen/dug/sdk/registry"
 )
 
@@ -26,6 +27,7 @@ type Source struct {
 	Slugs        []string
 	Search       string
 	PageSize     int
+	Concurrency  int // add-ons whose version history is fetched in flight; 0 means 4
 	VersionDepth string
 	Attempts     int
 	// DownloadHosts restricts XPI download URLs; nil means DefaultDownloadHosts.
@@ -156,6 +158,23 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 	if err != nil {
 		return err
 	}
+	return pool.Walk(ctx, s.workers(), s.walk,
+		func(ctx context.Context, a addon) pool.Collected[registry.Reference] {
+			return pool.Collect(func(add func(registry.Reference) error) error { return s.emitVersions(ctx, a, depth, add) })
+		},
+		func(c pool.Collected[registry.Reference]) error { return c.Emit(emit) })
+}
+
+func (s *Source) workers() int {
+	if s.Concurrency > 0 {
+		return s.Concurrency
+	}
+	return 4
+}
+
+// walk pushes the selected add-ons, each once. The walk is serial; pushing
+// hands each add-on to the pool, so version walks overlap with the search.
+func (s *Source) walk(ctx context.Context, push func(addon) error) error {
 	seen := make(map[int64]bool)
 	add := func(a addon) error {
 		if a.ID < 1 || a.Slug == "" || a.Type != "extension" {
@@ -165,7 +184,7 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 			return nil
 		}
 		seen[a.ID] = true
-		return s.emitVersions(ctx, a, depth, emit)
+		return push(a)
 	}
 	if len(s.Slugs) > 0 {
 		for _, slug := range s.Slugs {

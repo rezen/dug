@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/rezen/dug/sdk/httpx"
+	"github.com/rezen/dug/sdk/pool"
 	"github.com/rezen/dug/sdk/registry"
 	"github.com/rezen/dug/sdk/retry"
 )
@@ -43,6 +44,7 @@ var DefaultDownloadHosts = []string{"galaxy.ansible.com"}
 
 const (
 	maxMetadataBytes = 32 << 20
+	defaultWorkers   = 4
 	maxPageSize      = 100 // the API silently clamps larger limits
 )
 
@@ -58,6 +60,7 @@ type Source struct {
 	Collections  []string // fully qualified names, namespace.name
 	Namespaces   []string
 	PageSize     int    // 0 means 100
+	Concurrency  int    // collections whose versions are fetched in flight; 0 means 4
 	VersionDepth string // empty means the current release only
 }
 
@@ -200,36 +203,40 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 	if s.PageSize < 0 || s.PageSize > maxPageSize {
 		return fmt.Errorf("%s page_size must be 1–%d", Identity, maxPageSize)
 	}
+	explicit := len(s.Collections) > 0
+	return pool.Walk(ctx, s.workers(), s.walk,
+		func(ctx context.Context, c collection) pool.Collected[registry.Reference] {
+			return s.collect(ctx, c, depth, explicit)
+		},
+		func(c pool.Collected[registry.Reference]) error { return c.Emit(emit) })
+}
+
+func (s *Source) workers() int {
+	if s.Concurrency > 0 {
+		return s.Concurrency
+	}
+	return defaultWorkers
+}
+
+// walk pushes the selected collections, each once, in index order. The walk is
+// serial so offset pagination stays correct; pushing hands each collection to
+// the pool, so version fetches overlap with the rest of the walk.
+func (s *Source) walk(ctx context.Context, push func(collection) error) error {
 	seen := make(map[string]bool)
 	// Live catalogs shift under offset pagination, so dedupe by name.
-	once := func(c collection) (bool, error) {
+	fresh := func(c collection) error {
 		if err := ctx.Err(); err != nil {
-			return false, err
+			return err
 		}
 		if validPart(c.Namespace) != nil || validPart(c.Name) != nil {
-			return false, fmt.Errorf("invalid %s catalog entry %q.%q", Identity, c.Namespace, c.Name)
+			return fmt.Errorf("invalid %s catalog entry %q.%q", Identity, c.Namespace, c.Name)
 		}
 		key := c.Namespace + "." + c.Name
 		if seen[key] {
-			return false, nil
-		}
-		seen[key] = true
-		return true, nil
-	}
-	// A collection or version that vanishes between the index page and its own
-	// request is skipped during a full walk; an explicit selection fails.
-	walked := func(c collection) error {
-		fresh, err := once(c)
-		if err != nil || !fresh {
-			return err
-		}
-		err = s.emitVersions(ctx, c, depth, emit)
-		var status *httpx.StatusError
-		if errors.As(err, &status) && status.Code == http.StatusNotFound {
-			slog.Warn("ansible-galaxy collection disappeared during listing", "collection", c.Namespace+"."+c.Name, "url", status.URL)
 			return nil
 		}
-		return err
+		seen[key] = true
+		return push(c)
 	}
 	switch {
 	case len(s.Collections) > 0:
@@ -245,14 +252,8 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 			if c.Namespace != namespace || c.Name != name {
 				return retry.Permanent(fmt.Errorf("%s returned %q.%q for %s", Identity, c.Namespace, c.Name, fqcn))
 			}
-			fresh, err := once(c)
-			if err != nil {
+			if err := fresh(c); err != nil {
 				return err
-			}
-			if fresh {
-				if err := s.emitVersions(ctx, c, depth, emit); err != nil {
-					return fmt.Errorf("%s: %w", fqcn, err)
-				}
 			}
 		}
 		return nil
@@ -261,13 +262,32 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 			if err := validPart(namespace); err != nil {
 				return err
 			}
-			if err := s.walkCatalog(ctx, namespace, walked); err != nil {
+			if err := s.walkCatalog(ctx, namespace, fresh); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	return s.walkCatalog(ctx, "", walked)
+	return s.walkCatalog(ctx, "", fresh)
+}
+
+// collect gathers one collection's references without emitting, so many can be
+// fetched at once while the caller emits in index order. A collection or
+// version that vanishes between the index page and its own request is skipped
+// during a full walk; an explicit selection fails.
+func (s *Source) collect(ctx context.Context, c collection, depth registry.VersionDepth, explicit bool) pool.Collected[registry.Reference] {
+	fqcn := c.Namespace + "." + c.Name
+	got := pool.Collect(func(add func(registry.Reference) error) error { return s.emitVersions(ctx, c, depth, add) })
+	var status *httpx.StatusError
+	switch {
+	case got.Err == nil:
+	case explicit:
+		got.Err = fmt.Errorf("%s: %w", fqcn, got.Err)
+	case errors.As(got.Err, &status) && status.Code == http.StatusNotFound:
+		slog.Warn("ansible-galaxy collection disappeared during listing", "collection", fqcn, "url", status.URL)
+		got.Err = nil
+	}
+	return got
 }
 
 // walkCatalog enumerates the index page by page. The API orders it by

@@ -19,7 +19,11 @@ go build -o dug-wordpress-themes ./cmd/dug-wordpress-themes
 ```
 
 Both accept the query options `search`, `slugs`, `page_size` (1–250), `browse`
-and `version_depth` (integer, inclusive date cutoff, unlimited). `browse` takes
+`version_depth` (integer, inclusive date cutoff, unlimited) and
+`listing_concurrency` (1–16, default 4). With a `version_depth` other than 1,
+that many plugins or themes have their version history and SVN dates fetched
+at once, still emitted in listing order; depth 1 makes no extra requests and
+ignores it. `browse` takes
 `updated` (default), `popular` or `new`; the theme directory also takes
 `featured`. For themes, `popular` lists only themes with active installs and
 `featured` is a small curated set, so `updated` or `new` walk the whole catalog.

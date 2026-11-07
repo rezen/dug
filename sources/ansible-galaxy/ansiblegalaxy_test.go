@@ -205,12 +205,13 @@ func TestOptionValidation(t *testing.T) {
 		{"unknown": "x"}, {"collections": "nodot"}, {"collections": "acme."}, {"collections": "../bad.name"}, {"collections": "acme.widget,"},
 		{"namespaces": "a/b"}, {"namespaces": ""}, {"page_size": "0"}, {"page_size": "101"}, {"page_size": "x"},
 		{"version_depth": "0"}, {"collections": "acme.widget", "namespaces": "acme"},
+		{"listing_concurrency": "0"}, {"listing_concurrency": "17"}, {"listing_concurrency": "x"},
 	} {
 		if _, err := factory(options); err == nil {
 			t.Errorf("accepted %v", options)
 		}
 	}
-	for _, options := range []map[string]string{nil, {"collections": "acme.widget, other.tool"}, {"namespaces": "acme"}, {"page_size": "100"}, {"version_depth": "unlimited"}, {"version_depth": "2025-01-01"}} {
+	for _, options := range []map[string]string{nil, {"collections": "acme.widget, other.tool"}, {"namespaces": "acme"}, {"page_size": "100"}, {"version_depth": "unlimited"}, {"version_depth": "2025-01-01"}, {"listing_concurrency": "16"}, {"listing_concurrency": "1"}} {
 		if _, err := factory(options); err != nil {
 			t.Errorf("rejected %v: %v", options, err)
 		}
@@ -556,6 +557,47 @@ func TestInvalidUpstreamMetadataFails(t *testing.T) {
 			s := newSource(t, f)
 			if err := s.Discover(context.Background(), func(registry.Reference) error { return nil }); err == nil {
 				t.Fatal("invalid upstream metadata was accepted")
+			}
+		})
+	}
+}
+
+func TestListingConcurrencyOverlapsFetchesInIndexOrder(t *testing.T) {
+	var want []string
+	var collections []fakeCollection
+	for i := 0; i < 12; i++ {
+		name := fmt.Sprintf("c%02d", i)
+		want = append(want, "acme."+name+"@1.0.0")
+		collections = append(collections, fakeCollection{namespace: "acme", name: name, created: "2025-01-01T00:00:00Z", updated: "2025-01-02T00:00:00Z", highest: "1.0.0", versions: []fakeVersion{{"1.0.0", "2025-01-01T00:00:00Z"}}})
+	}
+	for workers, wantPeak := range map[int]int32{1: 1, 4: 0} {
+		t.Run(fmt.Sprint("workers=", workers), func(t *testing.T) {
+			f := &fakeGalaxy{collections: collections}
+			var inflight, peak atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.Contains(r.URL.Path, "/versions/1.0.0/") {
+					cur := inflight.Add(1)
+					defer inflight.Add(-1)
+					for p := peak.Load(); cur > p && !peak.CompareAndSwap(p, cur); p = peak.Load() {
+					}
+					// Earlier collections answer slowest, so only in-order
+					// emission keeps the index order.
+					name := strings.Split(strings.Trim(r.URL.Path, "/"), "/")[3]
+					idx, _ := strconv.Atoi(strings.TrimPrefix(name, "c"))
+					time.Sleep(time.Duration(12-idx) * 5 * time.Millisecond)
+				}
+				f.handler(w, r)
+			}))
+			t.Cleanup(server.Close)
+			s := &Source{Client: server.Client(), Endpoint: server.URL + "/api/", Attempts: 1, Concurrency: workers, DownloadHosts: []string{strings.TrimPrefix(server.URL, "http://")}}
+			if got := versions(discover(t, s)); !reflect.DeepEqual(got, want) {
+				t.Fatalf("got %v, want index order %v", got, want)
+			}
+			if wantPeak == 1 && peak.Load() != 1 {
+				t.Fatalf("one worker overlapped %d detail requests", peak.Load())
+			}
+			if wantPeak == 0 && (peak.Load() < 2 || peak.Load() > 6) {
+				t.Fatalf("peak overlap %d with 4 workers, want bounded concurrency above 1", peak.Load())
 			}
 		})
 	}

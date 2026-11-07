@@ -25,6 +25,7 @@ The host connects with registry identity `n8n` and that plugin URL. Options:
 | `keyword` | npm keyword to walk; lowercase letters, digits, `.`, `_`, `-`. Default `n8n-community-node-package` |
 | `enumerate` | `all` (default), `search` or `ecosystems` |
 | `version_depth` | Positive integer, inclusive `YYYY-MM-DD` cutoff or `unlimited`; default 1 |
+| `listing_concurrency` | Packument fetches in flight, 1–16, default 4. Download counts for the next 128 packages are fetched while the current ones emit; references are still emitted in package order |
 
 `packages` excludes `keyword` and `enumerate`. Unknown options are errors. Other
 npm-hosted plugin ecosystems fit the same shape through `keyword` (for example

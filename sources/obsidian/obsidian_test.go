@@ -114,12 +114,12 @@ func names(refs []registry.Reference) []string {
 
 func TestOptionValidation(t *testing.T) {
 	factory := PluginFactory(nil, "", "")
-	for _, options := range []map[string]string{{"unknown": "x"}, {"ids": "../bad"}, {"ids": ""}, {"ids": "a,"}, {"version_depth": "0"}} {
+	for _, options := range []map[string]string{{"unknown": "x"}, {"ids": "../bad"}, {"ids": ""}, {"ids": "a,"}, {"version_depth": "0"}, {"listing_concurrency": "0"}, {"listing_concurrency": "17"}, {"listing_concurrency": "x"}} {
 		if _, err := factory(options); err == nil {
 			t.Errorf("accepted %v", options)
 		}
 	}
-	for _, options := range []map[string]string{nil, {"ids": "obsidian-git, dataview"}, {"version_depth": "unlimited"}} {
+	for _, options := range []map[string]string{nil, {"ids": "obsidian-git, dataview"}, {"version_depth": "unlimited"}, {"listing_concurrency": "16"}} {
 		if _, err := factory(options); err != nil {
 			t.Errorf("rejected %v: %v", options, err)
 		}
@@ -272,5 +272,51 @@ func TestCatalogErrorsAndCancellation(t *testing.T) {
 	cancel()
 	if err := f.source().Discover(ctx, func(registry.Reference) error { return nil }); !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v, want context.Canceled", err)
+	}
+}
+
+func TestListingConcurrencyOverlapsAndKeepsCatalogOrder(t *testing.T) {
+	const plugins = 24
+	var catalog []map[string]string
+	for i := 0; i < plugins; i++ {
+		catalog = append(catalog, map[string]string{"id": fmt.Sprintf("p%02d", i), "name": "P", "author": "A", "repo": fmt.Sprintf("o/p%02d", i)})
+	}
+	var inflight, peak atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch p := r.URL.Path; {
+		case p == "/catalog/community-plugins.json":
+			json.NewEncoder(w).Encode(catalog)
+		case p == "/catalog/community-plugin-stats.json":
+			io.WriteString(w, "{}")
+		case strings.HasPrefix(p, "/api/repos/o/p"):
+			cur := inflight.Add(1)
+			defer inflight.Add(-1)
+			for {
+				old := peak.Load()
+				if cur <= old || peak.CompareAndSwap(old, cur) {
+					break
+				}
+			}
+			var n int
+			fmt.Sscanf(p, "/api/repos/o/p%d/releases", &n)
+			time.Sleep(time.Duration(plugins-n) * time.Millisecond) // later plugins answer first
+			json.NewEncoder(w).Encode([]any{release(n+1, "1.0.0", false, "2024-01-01T00:00:00Z", mkAsset(1, "main.js", 1, sum), mkAsset(2, "manifest.json", 1, ""))})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	s := &Source{Client: srv.Client(), Attempts: 1, GitHubEndpoint: srv.URL + "/api", CatalogEndpoint: srv.URL + "/catalog", ReleaseEndpoint: srv.URL + "/dl", Concurrency: 6}
+	got := names(discover(t, s))
+	if len(got) != plugins {
+		t.Fatalf("got %d references, want %d", len(got), plugins)
+	}
+	for i, name := range got {
+		if want := fmt.Sprintf("p%02d@1.0.0", i); name != want {
+			t.Fatalf("reference %d = %s, want %s (catalog order)", i, name, want)
+		}
+	}
+	if p := peak.Load(); p < 2 || p > 8 {
+		t.Fatalf("peak concurrent release listings %d, want overlap bounded near 6", p)
 	}
 }

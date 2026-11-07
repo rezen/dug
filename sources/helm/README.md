@@ -15,14 +15,17 @@ The host connects with registry identity `helm` and that plugin URL.
 Options: `charts` (comma-separated `REPOSITORY/CHART`, using Artifact Hub's
 repository names), `repos` (every chart of those Artifact Hub repositories),
 `search` (full-text query, up to 100 characters), and `version_depth` (positive
-integer, inclusive date cutoff or unlimited; default is the current version).
+integer, inclusive date cutoff or unlimited; default is the current version), and
+`listing_concurrency` (package lookups in flight, 1–16, default 4; references are
+still emitted in listing order).
 `charts` cannot be combined with `repos` or `search`. Unknown options are errors.
 
 With no selector the plugin walks every helm package Artifact Hub indexes,
 deprecated ones included (18,942 on 2026-11-06), 60 per page, ordered by last
 update. Artifact Hub answers a sustained search rate above about one request per
 second with a bare 429, so searches are spaced two seconds apart and the index
-walk takes about ten minutes; package requests are spaced 400 ms. The catalog
+walk takes about ten minutes; package requests are spaced 400 ms across all lookups, so
+`listing_concurrency` hides request latency but cannot raise that rate. The catalog
 shifts while it is walked: a chart updated mid-walk jumps to the front of the
 update ordering and is missed, so the first 180 results are read again, up to
 three times, until they add nothing new. A small remaining gap against the

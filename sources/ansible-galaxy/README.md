@@ -19,6 +19,7 @@ Options:
 | `namespaces` | Comma-separated namespaces; every published collection in each |
 | `page_size` | Index and version-list page size, 1–100; default 100 (the API clamps larger limits) |
 | `version_depth` | Positive integer, inclusive `YYYY-MM-DD` cutoff, or `unlimited`; default 1 |
+| `listing_concurrency` | Collections whose version documents are fetched at once, 1–16; default 4. The index walk stays serial and references are emitted in index order |
 
 `collections` and `namespaces` are mutually exclusive. With neither, the plugin
 walks the whole public catalog of published collections. Unknown keys are errors.

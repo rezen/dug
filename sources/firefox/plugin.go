@@ -47,8 +47,14 @@ func PluginFactory(client *http.Client) plugin.Factory {
 					return nil, err
 				}
 				s.VersionDepth = value
+			case "listing_concurrency":
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 1 || n > 16 {
+					return nil, fmt.Errorf("firefox listing_concurrency must be 1–16")
+				}
+				s.Concurrency = n
 			default:
-				return nil, fmt.Errorf("unknown Firefox option %q (supported: slugs, search, page_size, version_depth)", key)
+				return nil, fmt.Errorf("unknown Firefox option %q (supported: slugs, search, page_size, version_depth, listing_concurrency)", key)
 			}
 		}
 		if len(s.Slugs) > 0 && s.Search != "" {

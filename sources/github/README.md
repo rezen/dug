@@ -27,6 +27,7 @@ one of `repos`, `owner`, or `search` selects repositories:
 | `refs` | Comma-separated extra branches or tags to snapshot for every repository |
 | `tags` | Archive every tag not already listed as a release or ref; default `false` |
 | `version_depth` | Positive integer, inclusive YYYY-MM-DD cutoff, or unlimited; default 1 |
+| `listing_concurrency` | Repositories looked up at once, 1–16; default 4. Search and owner paging stay serial, and references are emitted in walk order |
 
 Versions are published (non-draft) releases in GitHub's API order, newest first.
 Integer depth takes the first N; date depth keeps releases published on or after

@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -198,5 +200,81 @@ func TestAuthorObjectFalseFieldsAreEmpty(t *testing.T) {
 	in := `{"user_nicename":"acme","display_name":false,"profile":"https://profiles.wordpress.org/acme/","author":false}`
 	if err := json.Unmarshal([]byte(in), &a); err != nil || a != (author{Username: "acme", Profile: "https://profiles.wordpress.org/acme/"}) {
 		t.Fatalf("author=%+v err=%v", a, err)
+	}
+}
+
+func TestListingConcurrencyPrefetchesVersionHistoryInOrder(t *testing.T) {
+	const n = 12
+	var want []string
+	for i := 0; i < n; i++ {
+		want = append(want, fmt.Sprintf("plugin-%02d@2.0", i), fmt.Sprintf("plugin-%02d@1.0", i))
+	}
+	for _, tc := range []struct {
+		name    string
+		workers int
+		depth   string
+	}{{"one worker", 1, "2"}, {"four workers", 4, "2"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var inflight, peak, infoCalls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				base := "http://" + r.Host
+				if slug := r.URL.Query().Get("request[slug]"); slug != "" {
+					infoCalls.Add(1)
+					cur := inflight.Add(1)
+					defer inflight.Add(-1)
+					for p := peak.Load(); cur > p && !peak.CompareAndSwap(p, cur); p = peak.Load() {
+					}
+					// Earlier plugins answer slowest, so only in-order emission
+					// keeps the listing order.
+					i, _ := strconv.Atoi(strings.TrimPrefix(slug, "plugin-"))
+					time.Sleep(time.Duration(n-i) * 5 * time.Millisecond)
+					json.NewEncoder(w).Encode(map[string]any{"slug": slug, "version": "2.0", "download_link": base + "/2.0.zip",
+						"versions": map[string]string{"trunk": base + "/trunk.zip", "2.0": base + "/2.0.zip", "1.0": base + "/1.0.zip"}})
+					return
+				}
+				var plugins []map[string]string
+				for i := 0; i < n; i++ {
+					plugins = append(plugins, map[string]string{"slug": fmt.Sprintf("plugin-%02d", i), "version": "2.0", "download_link": base + "/2.0.zip"})
+				}
+				json.NewEncoder(w).Encode(map[string]any{"info": map[string]int{"pages": 1}, "plugins": plugins})
+			}))
+			defer server.Close()
+			s := &Source{Client: server.Client(), Endpoint: server.URL, PageSize: 100, Attempts: 1, VersionDepth: tc.depth, Concurrency: tc.workers, DownloadHosts: testHosts(server)}
+			var got []string
+			if err := s.Discover(context.Background(), func(ref registry.Reference) error { got = append(got, ref.Name+"@"+ref.Version); return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("got %v, want listing order %v", got, want)
+			}
+			if infoCalls.Load() != n {
+				t.Fatalf("%d version-history requests, want %d", infoCalls.Load(), n)
+			}
+			if tc.workers == 1 && peak.Load() != 1 {
+				t.Fatalf("one worker overlapped %d requests", peak.Load())
+			}
+			if tc.workers == 4 && (peak.Load() < 2 || peak.Load() > 6) {
+				t.Fatalf("peak overlap %d with 4 workers, want bounded concurrency above 1", peak.Load())
+			}
+		})
+	}
+}
+
+func TestDepthOneMakesNoVersionHistoryRequests(t *testing.T) {
+	var info atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("request[slug]") != "" {
+			info.Add(1)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"info": map[string]int{"pages": 1}, "plugins": []map[string]string{
+			{"slug": "a", "version": "1.0", "download_link": "http://" + r.Host + "/a.zip"},
+			{"slug": "b", "version": "1.0", "download_link": "http://" + r.Host + "/b.zip"},
+		}})
+	}))
+	defer server.Close()
+	s := &Source{Client: server.Client(), Endpoint: server.URL, PageSize: 100, Attempts: 1, VersionDepth: "1", Concurrency: 8, DownloadHosts: testHosts(server)}
+	count := 0
+	if err := s.Discover(context.Background(), func(registry.Reference) error { count++; return nil }); err != nil || count != 2 || info.Load() != 0 {
+		t.Fatalf("count=%d info=%d err=%v", count, info.Load(), err)
 	}
 }

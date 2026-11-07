@@ -15,10 +15,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rezen/dug/sdk/httpx"
+	"github.com/rezen/dug/sdk/pool"
 	"github.com/rezen/dug/sdk/registry"
 )
 
@@ -64,10 +64,10 @@ type lookupResult struct {
 	err error
 }
 
-// Discover walks the ID source while a bounded pool resolves metadata. Each ID
-// gets a future that is emitted in discovery order, so a slow lookup delays
-// emission but never idles the other workers, and the sitemap walk overlaps
-// with lookups instead of stalling on each batch.
+// Discover walks the ID source while a bounded pool resolves metadata. Results
+// are emitted in discovery order, so a slow lookup delays emission but never
+// idles the other workers, and the sitemap walk overlaps with lookups instead
+// of stalling on each batch.
 func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) error) error {
 	workers := s.ListingConcurrency
 	if workers == 0 {
@@ -76,33 +76,29 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 	if workers < 1 || workers > 128 {
 		return fmt.Errorf("listing concurrency must be 1–128")
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	futures := make(chan chan lookupResult, workers)
-	slots := make(chan struct{}, workers)
-	var lookups sync.WaitGroup
-	emitted := make(chan error, 1)
-	go func() {
-		var err error
-		for future := range futures {
-			result := <-future
+	return pool.Walk(ctx, workers, s.walkIDs,
+		func(ctx context.Context, id string) lookupResult {
+			ref, err := s.lookup(ctx, id)
 			if err != nil {
-				continue // drain after a failure so producers never block
+				err = fmt.Errorf("chrome %s: %w", id, err)
 			}
+			return lookupResult{id: id, ref: ref, err: err}
+		},
+		func(result lookupResult) error {
 			switch {
 			case errors.Is(result.err, errUnavailable) && len(s.IDs) == 0:
 				slog.Warn("skipping unavailable Chrome entry", "id", result.id, "error", result.err)
+				return nil
 			case result.err != nil:
-				err = result.err
-			default:
-				err = emit(result.ref)
+				return result.err
 			}
-			if err != nil {
-				cancel()
-			}
-		}
-		emitted <- err
-	}()
+			return emit(result.ref)
+		})
+}
+
+// walkIDs pushes each valid, unseen extension ID: the selected IDs, or every ID
+// the store's sitemap lists.
+func (s *Source) walkIDs(ctx context.Context, push func(string) error) error {
 	seen := make(map[string]bool)
 	add := func(id string) error {
 		if err := ctx.Err(); err != nil {
@@ -115,50 +111,21 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 			return nil
 		}
 		seen[id] = true
-		future := make(chan lookupResult, 1)
-		select {
-		case futures <- future:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		select {
-		case slots <- struct{}{}:
-		case <-ctx.Done():
-			future <- lookupResult{id: id, err: ctx.Err()}
-			return ctx.Err()
-		}
-		lookups.Add(1)
-		go func() {
-			defer lookups.Done()
-			defer func() { <-slots }()
-			ref, err := s.lookup(ctx, id)
-			if err != nil {
-				err = fmt.Errorf("chrome %s: %w", id, err)
-			}
-			future <- lookupResult{id: id, ref: ref, err: err}
-		}()
-		return nil
+		return push(id)
 	}
-	var walkErr error
 	if len(s.IDs) != 0 {
 		for _, id := range s.IDs {
-			if walkErr = add(id); walkErr != nil {
-				break
+			if err := add(id); err != nil {
+				return err
 			}
 		}
-	} else {
-		root := s.SitemapURL
-		if root == "" {
-			root = "https://chromewebstore.google.com/sitemap"
-		}
-		walkErr = s.walkSitemap(ctx, root, add)
+		return nil
 	}
-	close(futures)
-	lookups.Wait()
-	if err := <-emitted; err != nil {
-		return err
+	root := s.SitemapURL
+	if root == "" {
+		root = "https://chromewebstore.google.com/sitemap"
 	}
-	return walkErr
+	return s.walkSitemap(ctx, root, add)
 }
 
 func (s *Source) walkSitemap(ctx context.Context, root string, add func(string) error) error {

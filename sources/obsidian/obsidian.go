@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/rezen/dug/sdk/httpx"
+	"github.com/rezen/dug/sdk/pool"
 	"github.com/rezen/dug/sdk/registry"
 	"github.com/rezen/dug/sdk/retry"
 	ghsvc "github.com/rezen/dug/sdk/services/github"
@@ -69,6 +70,16 @@ type Source struct {
 	// relies on because a Source can also be constructed directly.
 	IDs          []string // plugin ids; empty walks the whole catalog
 	VersionDepth string   // empty means the current release only
+	Concurrency  int      // plugins whose releases are fetched in flight; 0 means 4
+}
+
+const defaultWorkers = 4
+
+func (s *Source) workers() int {
+	if s.Concurrency > 0 {
+		return s.Concurrency
+	}
+	return defaultWorkers
 }
 
 var _ registry.Registry = (*Source)(nil)
@@ -171,34 +182,55 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 			}
 		}
 	}
+	// Each plugin's releases are fetched by a pool worker, which only collects
+	// references; they are emitted here, in catalog order, from this goroutine.
+	var listings []listing
 	done := make(map[string]bool, len(order))
 	for _, id := range order {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
 		if done[id] {
 			continue
 		}
 		done[id] = true
-		p := byID[id]
-		if validID(p.ID) != nil {
-			slog.Warn("skipping obsidian catalog entry with invalid id", "id", p.ID)
-			continue
-		}
-		err := s.emitVersions(ctx, p, all[p.ID], depth, emit)
-		if explicit || err == nil {
-			if err != nil {
+		listings = append(listings, listing{entry: byID[id], invalid: validID(id) != nil})
+	}
+	return pool.Ordered(ctx, s.workers(), listings,
+		func(ctx context.Context, p listing) fetched {
+			if p.invalid || ctx.Err() != nil {
+				return fetched{p, pool.Collected[registry.Reference]{Err: ctx.Err()}}
+			}
+			return fetched{p, pool.Collect(func(add func(registry.Reference) error) error {
+				return s.emitVersions(ctx, p.entry, all[p.entry.ID], depth, add)
+			})}
+		},
+		func(f fetched) error {
+			if err := ctx.Err(); err != nil {
 				return err
 			}
-			continue
-		}
-		if errors.Is(err, errUnavailable) {
-			slog.Warn("skipping unavailable obsidian plugin", "id", p.ID, "repo", p.Repo, "error", err)
-			continue
-		}
-		return err
-	}
-	return nil
+			if f.invalid {
+				slog.Warn("skipping obsidian catalog entry with invalid id", "id", f.entry.ID)
+				return nil
+			}
+			err := f.Emit(emit)
+			if !explicit && errors.Is(err, errUnavailable) {
+				slog.Warn("skipping unavailable obsidian plugin", "id", f.entry.ID, "repo", f.entry.Repo, "error", err)
+				return nil
+			}
+			return err
+		})
+}
+
+// listing is a catalog entry to fetch; invalid ids are warned about at
+// emission time, in order, instead of fetched.
+type listing struct {
+	entry   entry
+	invalid bool
+}
+
+// fetched is one plugin's references and the error that ended its lookups.
+// References before the error are still emitted.
+type fetched struct {
+	listing
+	pool.Collected[registry.Reference]
 }
 
 var errUnavailable = errors.New("nothing to archive")

@@ -3,6 +3,7 @@ package obsidian
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/rezen/dug/sdk/plugin"
@@ -31,8 +32,14 @@ func PluginFactory(client *http.Client, endpoint, token string) plugin.Factory {
 					return nil, err
 				}
 				s.VersionDepth = value
+			case "listing_concurrency":
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 1 || n > 16 {
+					return nil, fmt.Errorf("obsidian listing_concurrency must be 1–16")
+				}
+				s.Concurrency = n
 			default:
-				return nil, fmt.Errorf("unknown Obsidian option %q (supported: ids, version_depth)", key)
+				return nil, fmt.Errorf("unknown Obsidian option %q (supported: ids, version_depth, listing_concurrency)", key)
 			}
 		}
 		if _, err := (&ghsvc.Client{Endpoint: endpoint, Token: token}).API(); err != nil {

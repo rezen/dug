@@ -13,7 +13,10 @@ go build -o dug-firefox ./cmd/dug-firefox
 
 The host connects with registry identity `firefox` and that plugin URL. Options:
 `slugs` (IDs, slugs or GUIDs, comma separated), `search`, `page_size` (1–50), and
-`version_depth` (positive integer, inclusive date cutoff or unlimited).
+`version_depth` (positive integer, inclusive date cutoff or unlimited), and
+`listing_concurrency` (1–16, default 4): add-ons whose version history is
+fetched at once while the search continues. References are still emitted in
+search order.
 
 Search queries public Firefox extensions and partitions creation-date ranges when
 a result window exceeds 30,000 items. It still sees a live catalog: private,
