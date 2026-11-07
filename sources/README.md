@@ -17,6 +17,7 @@ host owns storage, ordering, resume, and S3 credentials. See
 | [ansible-galaxy](ansible-galaxy/) | `ansible-galaxy` | `127.0.0.1:7787` | Yes, collection versions | Published collections only; lifetime downloads, tags, declared repository; SHA-256 and size pinned per version |
 | [obsidian](obsidian/) | `obsidian` | `127.0.0.1:7788` | Yes, GitHub releases | Community plugins; lifetime and per-version downloads from the catalog stats; main.js, manifest.json and styles.css per release, with GitHub's SHA-256 where it publishes one; needs `GITHUB_TOKEN` (about 10,000 plugins) |
 | [helm](helm/) | `helm` | `127.0.0.1:7789` | Yes, Artifact Hub versions | Charts from Artifact Hub's helm repositories; per-repo download host rule; SHA-256 pinned per version, no size; stars; OCI-hosted charts skipped |
+| [joomla](joomla/) | `joomla` | `127.0.0.1:7790` | Yes, update-manifest releases | Install from Web extensions whose install URL is an HTTPS update manifest (about 90 of 3,900); every release pinned with the manifest's SHA-256, SHA-384 or SHA-512; ratings, license; per-manifest download host rule |
 
 Run one locally with `just plugin <name> --listen 127.0.0.1:PORT`.
 

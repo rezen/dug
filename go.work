@@ -11,6 +11,7 @@ use (
 	./sources/firefox
 	./sources/github
 	./sources/helm
+	./sources/joomla
 	./sources/n8n
 	./sources/obsidian
 	./sources/wordpress

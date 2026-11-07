@@ -164,18 +164,16 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 		}
 		return nil
 	}
-	entries, err := s.catalog(ctx, hub)
-	if err != nil {
-		return err
-	}
 	ociSkipped := 0
-	for _, e := range entries {
+	// Charts are processed as the search yields them: the host gives up on a
+	// stream whose first reference takes over a minute, and the walk takes ten.
+	visit := func(e artifacthub.Package) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if strings.HasPrefix(strings.ToLower(e.Repository.URL), "oci:") {
 			ociSkipped++
-			continue
+			return nil
 		}
 		repo, chart := e.Repository.Name, e.NormalizedName
 		if err := validPart("repository", repo); err != nil {
@@ -188,22 +186,26 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 		if errors.Is(err, artifacthub.ErrNotFound) {
 			// Removed between the search and this lookup.
 			slog.Warn("helm chart disappeared during the walk", "chart", repo+"/"+chart)
-			continue
+			return nil
 		}
 		if err != nil {
 			return err
 		}
 		if seen[doc.ID] {
-			continue
+			return nil
 		}
 		seen[doc.ID] = true
 		if err := s.emitVersions(ctx, hub, doc, e.Stars, false, depth, emit); err != nil {
 			if errors.Is(err, errOCIChart) {
 				ociSkipped++
-				continue
+				return nil
 			}
 			return err
 		}
+		return nil
+	}
+	if err := s.catalog(ctx, hub, visit); err != nil {
+		return err
 	}
 	if ociSkipped > 0 {
 		slog.Warn("helm skipped charts published to OCI registries", "charts", ociSkipped)
@@ -211,7 +213,7 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 	return nil
 }
 
-// catalog collects every chart in the search, including deprecated ones, which
+// catalog visits every chart in the search once, including deprecated ones, which
 // Artifact Hub hides by default but which are still archives worth keeping.
 //
 // Search offsets shift while the catalog changes, and a full walk takes about
@@ -221,8 +223,8 @@ func (s *Source) Discover(ctx context.Context, emit func(registry.Reference) err
 // so after the walk the first few pages are read again until they add nothing
 // new. A gap that remains is deletions or a very busy index: a small one is a
 // warning, a large one an error, never a silent truncation.
-func (s *Source) catalog(ctx context.Context, hub *artifacthub.Client) ([]artifacthub.Package, error) {
-	var entries []artifacthub.Package
+func (s *Source) catalog(ctx context.Context, hub *artifacthub.Client, visit func(artifacthub.Package) error) error {
+	found := 0
 	seen := make(map[string]bool)
 	filter := artifacthub.Filter{Repos: s.Repos, Text: s.Search, Deprecated: true}
 	// walk reads up to rows results (all of them when 0) and reports how many
@@ -235,8 +237,11 @@ func (s *Source) catalog(ctx context.Context, hub *artifacthub.Client) ([]artifa
 			}
 			if !seen[p.ID] {
 				seen[p.ID] = true
-				entries = append(entries, p)
+				found++
 				added++
+				if err := visit(p); err != nil {
+					return err
+				}
 			}
 			if read++; rows > 0 && read >= rows {
 				return errStop
@@ -250,24 +255,24 @@ func (s *Source) catalog(ctx context.Context, hub *artifacthub.Client) ([]artifa
 	}
 	_, total, err := walk(0)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for range catchUpPasses {
 		added, t, err := walk(catchUpRows)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		total = t
 		if added == 0 {
 			break
 		}
 	}
-	if gap := total - len(entries); gap > max(5, total/200) {
-		return nil, fmt.Errorf("helm search ended early: got %d of %d charts", len(entries), total)
+	if gap := total - found; gap > max(5, total/200) {
+		return fmt.Errorf("helm search ended early: got %d of %d charts", found, total)
 	} else if gap > 0 {
-		slog.Warn("helm search reported more charts than it served", "got", len(entries), "total", total)
+		slog.Warn("helm search reported more charts than it served", "got", found, "total", total)
 	}
-	return entries, nil
+	return nil
 }
 
 // emitVersions emits the current version first, then older versions while the

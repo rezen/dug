@@ -14,3 +14,4 @@ go build -o bin/dug-n8n ./sources/n8n/cmd/dug-n8n
 go build -o bin/dug-ansible-galaxy ./sources/ansible-galaxy/cmd/dug-ansible-galaxy
 go build -o bin/dug-obsidian ./sources/obsidian/cmd/dug-obsidian
 go build -o bin/dug-helm ./sources/helm/cmd/dug-helm
+go build -o bin/dug-joomla ./sources/joomla/cmd/dug-joomla

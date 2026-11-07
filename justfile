@@ -47,9 +47,9 @@ web *args:
 local *args:
     go run ./cmd/dug local "$@"
 
-# Run one registry plugin in the foreground: wordpress, wordpress-themes, chrome, firefox, github, n8n, ansible-galaxy, obsidian, or helm.
+# Run one registry plugin in the foreground: wordpress, wordpress-themes, chrome, firefox, github, n8n, ansible-galaxy, obsidian, helm, or joomla.
 plugin source *args:
-    @case "$1" in wordpress|wordpress-themes) module=wordpress ;; chrome|firefox|github|n8n|ansible-galaxy|obsidian|helm) module="$1" ;; *) echo "Unknown source: $1" >&2; exit 2;; esac; source_name="$1"; shift; exec go run "./sources/$module/cmd/dug-$source_name" "$@"
+    @case "$1" in wordpress|wordpress-themes) module=wordpress ;; chrome|firefox|github|n8n|ansible-galaxy|obsidian|helm|joomla) module="$1" ;; *) echo "Unknown source: $1" >&2; exit 2;; esac; source_name="$1"; shift; exec go run "./sources/$module/cmd/dug-$source_name" "$@"
 
 # One command: start the source's plugin and local rclone S3 server, list it, stop the plugin. Extra args are host flags, e.g. --limit 20 --option namespaces=community.
 list source *args:
@@ -72,6 +72,9 @@ _with-plugin command source *args:
         wordpress-themes) module=wordpress port=7785 ;;
         n8n) module=n8n port=7786 ;;
         ansible-galaxy) module=ansible-galaxy port=7787 ;;
+        obsidian) module=obsidian port=7788 ;;
+        helm) module=helm port=7789 ;;
+        joomla) module=joomla port=7790 ;;
         *) echo "Unknown source: $1" >&2; exit 2 ;;
     esac
     source_name="$1"; shift

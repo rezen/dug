@@ -16,6 +16,7 @@ to separate repositories. The host has no compile-time adapter dependency.
 | `sources/ansible-galaxy/` | Ansible Galaxy adapter, tests, `cmd/dug-ansible-galaxy` | SDK |
 | `sources/obsidian/` | Obsidian adapter, tests, `cmd/dug-obsidian` | SDK |
 | `sources/helm/` | Helm charts adapter, tests, `cmd/dug-helm` | SDK |
+| `sources/joomla/` | Joomla adapter, tests, `cmd/dug-joomla` | SDK |
 | `integration/` | Tests combining host, SDK and adapters; the GoFakeS3 test server `cmd/dug-s3local` | Host, SDK, sources under test, GoFakeS3 |
 
 ```mermaid
@@ -29,6 +30,7 @@ flowchart LR
     AnsibleGalaxy[Ansible Galaxy module] --> SDK
     Obsidian[Obsidian module] --> SDK
     Helmcharts[Helm charts module] --> SDK
+    Joomla[Joomla module] --> SDK
     Host <-. Connect protocol .-> WP
     Host <-. Connect protocol .-> Chrome
     Host <-. Connect protocol .-> Firefox
@@ -37,6 +39,7 @@ flowchart LR
     Host <-. Connect protocol .-> AnsibleGalaxy
     Host <-. Connect protocol .-> Obsidian
     Host <-. Connect protocol .-> Helmcharts
+    Host <-. Connect protocol .-> Joomla
 ```
 
 Each source has its own `go.mod`, `go.sum`, executable and adapter tests. It must

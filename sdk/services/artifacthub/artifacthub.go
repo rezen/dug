@@ -32,7 +32,8 @@ const (
 	DefaultBase = "https://artifacthub.io/api/v1/"
 
 	// KindHelm is the package kind for Helm charts.
-	KindHelm = 0
+	KindHelm           = 0
+	KindContainerImage = 12
 
 	// PageSize is the largest page the search endpoint accepts.
 	PageSize    = 60

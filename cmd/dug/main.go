@@ -131,6 +131,11 @@ Helm charts: dug-helm (use --plugin-url http://127.0.0.1:7789)
   --option repos=prometheus-community,argo
   --option search=TEXT
 
+Joomla: dug-joomla (use --plugin-url http://127.0.0.1:7790)
+  --option slugs=akeeba-backup,admin-tools
+  --option ids=80,1737
+  --option categories=23,20
+
 Run a command with --help for transfer and storage options.
 `
 
