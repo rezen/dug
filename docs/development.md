@@ -12,7 +12,7 @@ just test sources/firefox        # one module; omit it for all modules
 just vet sdk
 just fmt
 just generate
-just s3                          # detached RustFS container
+just s3                          # foreground rclone S3 server over data/
 just s3-fake --listen 127.0.0.1:9000 # foreground test backend (alternative)
 just plugin wordpress            # foreground Connect plugin (another terminal)
 just dug --help

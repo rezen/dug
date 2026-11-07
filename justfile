@@ -39,7 +39,11 @@ generate:
 dug *args:
     go run ./cmd/dug "$@"
 
-# Ensure local RustFS and the bucket exist, then run the host CLI.
+# Serve the inventory dashboard (entries, known download size, top 10) on 127.0.0.1:7790; extra args are dug-web flags.
+web *args:
+    go run ./cmd/dug-web "$@"
+
+# Ensure the local rclone S3 server and the bucket exist, then run the host CLI.
 local *args:
     go run ./cmd/dug local "$@"
 
@@ -47,11 +51,11 @@ local *args:
 plugin source *args:
     @case "$1" in wordpress|wordpress-themes) module=wordpress ;; chrome|firefox|github|n8n|ansible-galaxy|obsidian|helm) module="$1" ;; *) echo "Unknown source: $1" >&2; exit 2;; esac; source_name="$1"; shift; exec go run "./sources/$module/cmd/dug-$source_name" "$@"
 
-# One command: start the source's plugin and local RustFS, list it, stop the plugin. Extra args are host flags, e.g. --limit 20 --option namespaces=community.
+# One command: start the source's plugin and local rclone S3 server, list it, stop the plugin. Extra args are host flags, e.g. --limit 20 --option namespaces=community.
 list source *args:
     @just _with-plugin list "$@"
 
-# One command: start the source's plugin and local RustFS, list and download it, stop the plugin. Extra args are host flags, e.g. --version-depth unlimited --list-limit 20.
+# One command: start the source's plugin and local rclone S3 server, list and download it, stop the plugin. Extra args are host flags, e.g. --version-depth unlimited --list-limit 20.
 sync source *args:
     @just _with-plugin sync "$@"
 
@@ -86,10 +90,10 @@ _with-plugin command source *args:
     done
     go run ./cmd/dug local "$command_name" "$source_name" --plugin-url "http://127.0.0.1:$port" "$@"
 
-# Start RustFS in Docker on loopback with persistent data/ and logs/ directories.
+# Serve data/ as S3 on loopback with rclone (foreground; buckets are directories, objects are plain files).
 s3:
-    mkdir -p data logs
-    docker run -d --name dug-rustfs -p 127.0.0.1:9000:9000 -p 127.0.0.1:9001:9001 -v "$(pwd)/data:/data" -v "$(pwd)/logs:/logs" rustfs/rustfs:1.0.0
+    mkdir -p data
+    rclone serve s3 data --addr 127.0.0.1:9000 --auth-key dug,dug
 
 # Run persistent local GoFakeS3 in the foreground; accepts server flags.
 s3-fake *args:

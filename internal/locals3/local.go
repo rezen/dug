@@ -1,9 +1,8 @@
-// Package locals3 manages the persistent RustFS development container.
+// Package locals3 manages a persistent local rclone S3 server over data/.
 package locals3
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,39 +21,36 @@ import (
 )
 
 const (
-	Endpoint      = "http://127.0.0.1:9000"
-	Region        = "us-east-1"
-	Bucket        = "dug-e2e"
-	containerName = "dug-rustfs"
-	// The image is pinned so a local run cannot silently pick up a new release.
-	image = "rustfs/rustfs:1.0.0"
+	Endpoint  = "http://127.0.0.1:9000"
+	Region    = "us-east-1"
+	Bucket    = "dug-e2e"
+	accessKey = "dug"
+	secretKey = "dug"
 )
 
 var localCredentials = aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
-	return aws.Credentials{AccessKeyID: "rustfsadmin", SecretAccessKey: "rustfsadmin", Source: "dug local"}, nil
+	return aws.Credentials{AccessKeyID: accessKey, SecretAccessKey: secretKey, Source: "dug local"}, nil
 })
 
-// NewStore ensures RustFS and the selected bucket exist before creating a store.
-// The container stays running after the command exits, retaining its bind mounts.
+// NewStore ensures the rclone server and the selected bucket exist before creating a store.
+// The server stays running after the command exits; objects are plain files under data/<bucket>/.
 func NewStore(ctx context.Context, opts storage.S3Options, stderr io.Writer) (*storage.S3, error) {
 	root, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
-	// Image pulls can take longer than readiness; both remain cancellable.
-	startup, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	fmt.Fprintln(stderr, "dug local: ensuring RustFS is running")
-	if err := ensureContainer(startup, root, runDocker); err != nil {
-		return nil, err
-	}
-	ready, stop := context.WithTimeout(ctx, 60*time.Second)
-	defer stop()
 	client := services.NewDugHttpClient(services.WithTimeout(3 * time.Second))
 	defer client.CloseIdleConnections()
-	if err := waitReady(ready, client, Endpoint, time.Second); err != nil {
-		return nil, fmt.Errorf("RustFS did not become ready (inspect with docker logs %s): %w", containerName, err)
+	fmt.Fprintln(stderr, "dug local: ensuring rclone S3 server is running")
+	if err := ensureServer(startup, client, root, startRclone); err != nil {
+		return nil, err
 	}
+	if err := waitReady(startup, client, Endpoint, 200*time.Millisecond); err != nil {
+		return nil, fmt.Errorf("rclone did not become ready (see logs/rclone.log): %w", err)
+	}
+	ready := startup
 	s3client := s3.New(s3.Options{
 		Region: Region, BaseEndpoint: aws.String(Endpoint), UsePathStyle: true,
 		Credentials: localCredentials, HTTPClient: client,
@@ -69,122 +65,68 @@ func NewStore(ctx context.Context, opts storage.S3Options, stderr io.Writer) (*s
 	return storage.NewS3(ctx, opts)
 }
 
-type dockerRunner func(context.Context, ...string) ([]byte, error)
+// serverStarter launches the detached rclone server; tests replace it.
+type serverStarter func(root string) error
 
-func runDocker(ctx context.Context, args ...string) ([]byte, error) {
-	output, err := exec.CommandContext(ctx, "docker", args...).Output()
+func startRclone(root string) error {
+	binary, err := exec.LookPath("rclone")
 	if err != nil {
-		var failure *exec.ExitError
-		if errors.As(err, &failure) {
-			return output, fmt.Errorf("docker %s: %w: %s", args[0], err, strings.TrimSpace(string(failure.Stderr)))
-		}
-		return output, fmt.Errorf("docker %s: %w", args[0], err)
-	}
-	return output, nil
-}
-
-type containerInfo struct {
-	State      struct{ Running bool }
-	Config     struct{ Image string }
-	Mounts     []struct{ Source, Destination string }
-	HostConfig struct {
-		PortBindings map[string][]struct{ HostIp, HostPort string }
-	}
-}
-
-func inspectContainer(ctx context.Context, docker dockerRunner) (containerInfo, error) {
-	var result []containerInfo
-	data, err := docker(ctx, "container", "inspect", containerName)
-	if err != nil {
-		return containerInfo{}, err
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return containerInfo{}, err
-	}
-	if len(result) != 1 {
-		return containerInfo{}, fmt.Errorf("expected one RustFS container")
-	}
-	return result[0], nil
-}
-
-func ensureContainer(ctx context.Context, root string, docker dockerRunner) error {
-	if _, err := docker(ctx, "info"); err != nil {
-		return fmt.Errorf("local mode needs Docker Engine or Docker Desktop running: %w", err)
-	}
-	info, err := inspectContainer(ctx, docker)
-	if err != nil {
-		for _, dir := range []string{"data", "logs"} {
-			if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
-				return err
-			}
-		}
-		_, runErr := docker(ctx, "run", "-d", "--name", containerName,
-			"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-			// RustFS ships fixed default credentials, so publish on loopback only.
-			"-p", "127.0.0.1:9000:9000", "-p", "127.0.0.1:9001:9001",
-			"-v", filepath.Join(root, "data")+":/data", "-v", filepath.Join(root, "logs")+":/logs", image)
-		// Another local command may have created the same container concurrently.
-		info, err = inspectContainer(ctx, docker)
-		if err != nil {
-			return fmt.Errorf("create RustFS container: %w", errors.Join(runErr, err))
-		}
-	}
-	if info.Config.Image != image {
-		return fmt.Errorf("container %s uses %q, expected %q; remove it with `docker rm -f %s` (data/ and logs/ are kept) so dug can recreate it", containerName, info.Config.Image, image, containerName)
+		return fmt.Errorf("local mode needs rclone on PATH (https://rclone.org/install/, e.g. brew install rclone): %w", err)
 	}
 	for _, dir := range []string{"data", "logs"} {
-		found := false
-		for _, mount := range info.Mounts {
-			if mount.Destination == "/"+dir && mount.Source == filepath.Join(root, dir) {
-				found = true
-			}
-		}
-		if !found {
-			return fmt.Errorf("container %s does not mount %s/%s; run from its original directory or rename the existing container", containerName, root, dir)
-		}
-	}
-	for _, port := range []string{"9000", "9001"} {
-		found := false
-		for _, binding := range info.HostConfig.PortBindings[port+"/tcp"] {
-			if binding.HostPort != port {
-				continue
-			}
-			if binding.HostIp != "127.0.0.1" {
-				return fmt.Errorf("container %s publishes port %s on %q instead of 127.0.0.1, exposing its default credentials to the network; remove it with `docker rm -f %s` (data/ and logs/ are kept) so dug can recreate it bound to loopback", containerName, port, binding.HostIp, containerName)
-			}
-			found = true
-		}
-		if !found {
-			return fmt.Errorf("container %s must publish port %s to host port %s", containerName, port, port)
-		}
-	}
-	if !info.State.Running {
-		if _, err := docker(ctx, "start", containerName); err != nil {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
 			return err
 		}
 	}
-	return nil
+	logFile, err := os.OpenFile(filepath.Join(root, "logs", "rclone.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	// Loopback only: the credentials are fixed and publicly known.
+	cmd := exec.Command(binary, "serve", "s3", filepath.Join(root, "data"),
+		"--addr", strings.TrimPrefix(Endpoint, "http://"), "--auth-key", accessKey+","+secretKey)
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	cmd.SysProcAttr = detachedAttr()
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start rclone: %w", err)
+	}
+	// The server outlives this command, like the container it replaces.
+	return cmd.Process.Release()
 }
 
+// listening reports whether anything already answers HTTP at the endpoint.
+func listening(ctx context.Context, client *http.Client, endpoint string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	response.Body.Close()
+	return true
+}
+
+func ensureServer(ctx context.Context, client *http.Client, root string, start serverStarter) error {
+	if listening(ctx, client, Endpoint) {
+		return nil
+	}
+	return start(root)
+}
+
+// waitReady polls until the server answers any HTTP request. rclone has no
+// health endpoint and rejects unsigned requests, so a 403 still means ready.
 func waitReady(ctx context.Context, client *http.Client, endpoint string, interval time.Duration) error {
-	for {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/health", nil)
-		if err != nil {
-			return err
-		}
-		response, err := client.Do(req)
-		if err == nil {
-			response.Body.Close()
-			if response.StatusCode == http.StatusOK {
-				return nil
-			}
-		}
+	for !listening(ctx, client, endpoint) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(interval):
 		}
 	}
+	return nil
 }
 
 type bucketAPI interface {

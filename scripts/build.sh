@@ -3,6 +3,7 @@ set -eu
 cd "$(dirname "$0")/.."
 mkdir -p bin
 go build -o bin/dug ./cmd/dug
+go build -o bin/dug-web ./cmd/dug-web
 go build -o bin/dug-s3local ./integration/cmd/dug-s3local
 go build -o bin/dug-wordpress ./sources/wordpress/cmd/dug-wordpress
 go build -o bin/dug-wordpress-themes ./sources/wordpress/cmd/dug-wordpress-themes

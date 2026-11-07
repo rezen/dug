@@ -26,7 +26,7 @@ plugin process, so the host knows nothing about any particular registry.
 ## Quick start
 
 Requires Go 1.26+, [just](https://github.com/casey/just), and Docker (for the
-local S3 used below). Each command starts the registry plugin and a local RustFS
+local S3 used below). Each command starts the registry plugin and a local rclone S3 server
 bucket for you, then stops the plugin when it finishes.
 
 ```sh
@@ -46,6 +46,15 @@ export DUG_S3_ENDPOINT=http://localhost:9000   # omit for AWS S3
 
 ./bin/dug sync wordpress --limit 100 --order updated
 ```
+
+## Inventory dashboard
+
+`just web` serves a read-only page at <http://127.0.0.1:7790> over the local inventories
+`dug list` keeps in `.local/inventories` (`--inventory-dir` to change). Each inventory shows its
+entry and package counts, the download size where the registry publishes archive sizes
+(Ansible Galaxy, Chrome, Firefox; WordPress publishes none, so the page says the total is
+unknown rather than zero), and the top 10 packages by downloads, installs, or stars. It has no
+authentication, so it listens on loopback by default.
 
 ## Registries
 
@@ -77,7 +86,7 @@ to enable bearer authentication. Details and options for each registry are in
 | [Workflow](docs/workflow.md) | `list`, `download`, `sync`, inventories, ordering, limits |
 | [Filters and version history](docs/filtering.md) | `--where` expressions, facts, `--version-depth` |
 | [Sources](docs/sources.md) | Per-registry options, behavior, and caveats |
-| [S3 and local setup](docs/s3.md) | Bucket permissions, RustFS, GoFakeS3 |
+| [S3 and local setup](docs/s3.md) | Bucket permissions, rclone, GoFakeS3 |
 | [Storage and resume](docs/storage.md) | Bucket layout, manifests, failures, exit codes |
 | [Tuning](docs/tuning.md) | Concurrency, timeouts, retries, HTTP caching |
 | [Plugin design](docs/plugins.md) | Protocol, lifecycle, authentication |

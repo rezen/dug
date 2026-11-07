@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dug inventories</title>
+<style>
+  :root { --bg:#fafafa; --fg:#1b1f23; --muted:#667; --card:#fff; --line:#dde1e6; --accent:#2f6fed; --warn:#b45309; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171a; --fg:#e6e8ea; --muted:#9aa3ad; --card:#1c2024; --line:#2d333a; --accent:#6b9bff; --warn:#f0a04b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px 16px 48px; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui,sans-serif; }
+  main { max-width:960px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; font-size:13px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:16px; }
+  .card h2 { font-size:17px; margin:0; }
+  .meta { color:var(--muted); font-size:12px; margin:2px 0 14px; word-break:break-word; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:14px; }
+  .stat .n { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .stat .l { color:var(--muted); font-size:12px; }
+  .note { color:var(--warn); font-size:12px; margin:-6px 0 14px; }
+  .tabs { display:flex; gap:6px; margin-bottom:8px; flex-wrap:wrap; }
+  .tabs button { font:inherit; font-size:13px; padding:4px 10px; border:1px solid var(--line); border-radius:999px; background:none; color:var(--fg); cursor:pointer; }
+  .tabs button[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:#fff; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td { padding:5px 4px; border-top:1px solid var(--line); }
+  td.v { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  td.r { color:var(--muted); width:28px; }
+  td.ver { color:var(--muted); font-size:12px; }
+  .badge { font-size:11px; border:1px solid var(--warn); color:var(--warn); border-radius:4px; padding:0 5px; margin-left:6px; vertical-align:middle; }
+  .empty, .err { color:var(--muted); }
+  .err { color:var(--warn); }
+</style>
+</head>
+<body>
+<main>
+  <h1>dug inventories</h1>
+  <p class="sub" id="sub">Loading…</p>
+  <div id="list"></div>
+</main>
+<script>
+const nf = new Intl.NumberFormat();
+const num = n => nf.format(n);
+function bytes(n) {
+  const u = ["B","KiB","MiB","GiB","TiB","PiB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(n < 10 ? 2 : 1) : n) + " " + u[i];
+}
+function el(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  Object.assign(e, props || {});
+  for (const k of kids) e.append(k);
+  return e;
+}
+function stat(value, label) {
+  return el("div", {className: "stat"}, el("div", {className: "n", textContent: value}), el("div", {className: "l", textContent: label}));
+}
+function table(items) {
+  const t = el("table");
+  items.forEach((it, i) => t.append(el("tr", null,
+    el("td", {className: "r", textContent: i + 1}),
+    el("td", {textContent: it.name}),
+    el("td", {className: "ver", textContent: it.version}),
+    el("td", {className: "v", textContent: num(it.value)}))));
+  return t;
+}
+function card(inv) {
+  const c = el("section", {className: "card"});
+  const title = el("h2", {textContent: inv.registry});
+  if (!inv.complete) title.append(el("span", {className: "badge", textContent: "incomplete", title: "No matching completion record: the listing was interrupted or the file is truncated"}));
+  c.append(title);
+  const opts = Object.entries(inv.options || {}).map(([k, v]) => k + "=" + v).join(" ");
+  c.append(el("div", {className: "meta", textContent:
+    [inv.id, new Date(inv.created_at).toLocaleString(), inv.limit ? "limit " + inv.limit : "", opts].filter(Boolean).join(" · ")}));
+
+  const stats = el("div", {className: "stats"});
+  stats.append(stat(num(inv.entries), "entries (versions)"), stat(num(inv.packages), "distinct packages"));
+  stats.append(stat(inv.sized_entries ? bytes(inv.known_bytes) : "unknown", inv.unsized_entries ? "download size, known part" : "download size"));
+  c.append(stats);
+  if (!inv.entries) {
+    c.append(el("div", {className: "empty", textContent: "No entries."}));
+  } else if (inv.unsized_entries) {
+    c.append(el("div", {className: "note", textContent: inv.sized_entries
+      ? `Size covers ${num(inv.sized_entries)} of ${num(inv.entries)} entries; this registry published no size for the other ${num(inv.unsized_entries)}, so the real total is larger.`
+      : "This registry publishes no archive sizes at listing time, so the total is only known after downloading."}));
+  }
+
+  if (inv.rankings.length) {
+    const tabs = el("div", {className: "tabs"});
+    const body = el("div");
+    const show = r => {
+      body.replaceChildren(table(r.items));
+      for (const b of tabs.children) b.setAttribute("aria-pressed", b.dataset.key === r.key);
+    };
+    inv.rankings.forEach(r => {
+      const b = el("button", {textContent: "Top 10: " + r.label.replace(/^Most /, "")});
+      b.dataset.key = r.key;
+      b.onclick = () => show(r);
+      tabs.append(b);
+    });
+    c.append(tabs, body);
+    show(inv.rankings[0]);
+  } else {
+    c.append(el("div", {className: "empty", textContent: "No download, install, or star figures in this inventory."}));
+  }
+  return c;
+}
+fetch("/api/inventories").then(r => {
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}).then(data => {
+  document.getElementById("sub").textContent = `${data.inventories.length} sources, latest run of each, from ${data.dir}`;
+  const list = document.getElementById("list");
+  if (!data.inventories.length) list.append(el("p", {className: "empty", textContent: "No inventories yet. Run `dug list` first."}));
+  data.inventories.forEach(i => list.append(card(i)));
+  (data.skipped || []).forEach(s => list.append(el("p", {className: "err", textContent: "Skipped " + s})));
+}).catch(e => {
+  document.getElementById("sub").textContent = "";
+  document.getElementById("list").append(el("p", {className: "err", textContent: "Failed to load: " + e.message}));
+});
+</script>
+</body>
+</html>

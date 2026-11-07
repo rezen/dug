@@ -48,7 +48,7 @@ func misuse(format string, args ...any) error { return usageError{fmt.Errorf(for
 const usage = `dug — archive registry resources using Connect plugins
 
 Usage:
-  dug local COMMAND REGISTRY [flags]  (automatically start local RustFS)
+  dug local COMMAND REGISTRY [flags]  (automatically start a local rclone S3 server)
   dug list REGISTRY --bucket BUCKET [flags]
   dug download REGISTRY --bucket BUCKET --inventory KEY --order ORDER [flags]
   dug sync REGISTRY --bucket BUCKET --order ORDER [flags]
@@ -65,7 +65,7 @@ uses the saved parts. list and sync record that last run in S3 under <registry>/
 List output: --format table (default), jsonl (references), or summary (JSON).
 Local inventories: --inventory-dir .local/inventories (default).
 
-local wraps any command with automatic RustFS startup and bucket creation.
+local wraps any command with automatic local rclone S3 startup and bucket creation.
 Requires Docker running; defaults to bucket dug-e2e at http://127.0.0.1:9000.
 It uses local credentials and data/logs in the working directory.
 The registry plugin must be running separately.

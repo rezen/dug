@@ -26,7 +26,7 @@ walks the whole public catalog of published collections. Unknown keys are errors
 ## Listing and downloading everything
 
 From the repository root, `just list ansible-galaxy` starts the plugin and local
-RustFS, prints the catalog, and stops the plugin. Extra arguments are host flags,
+rclone S3, prints the catalog, and stops the plugin. Extra arguments are host flags,
 such as `--limit 20` or `--option namespaces=community`.
 
 To download every collection tarball, run one command. `sync` lists, saves the
@@ -37,7 +37,7 @@ must be running for `local` mode.
 just sync ansible-galaxy
 ```
 
-Like `list`, it starts the plugin and local RustFS and stops the plugin when done.
+Like `list`, it starts the plugin and local rclone S3 server and stops the plugin when done.
 To manage the plugin yourself, run `just plugin ansible-galaxy` in one terminal
 and `just local sync ansible-galaxy --plugin-url http://127.0.0.1:7787` in another.
 
