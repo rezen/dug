@@ -207,6 +207,11 @@ var authorLink = regexp.MustCompile(`(?is)<a\b[^>]*\bhref="([^"]*)"[^>]*>(.*?)</
 var anyTag = regexp.MustCompile(`(?s)<[^>]*>`)
 
 func (a *author) UnmarshalJSON(data []byte) error {
+	// The directory sends false (or null) for an item with no author on record.
+	switch strings.TrimSpace(string(data)) {
+	case "false", "null":
+		return nil
+	}
 	var text string
 	if err := json.Unmarshal(data, &text); err == nil {
 		if m := authorLink.FindStringSubmatch(text); m != nil {
@@ -217,19 +222,31 @@ func (a *author) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var object struct {
-		DisplayName string `json:"display_name"`
-		Nicename    string `json:"user_nicename"`
-		Profile     string `json:"profile"`
-		Author      string `json:"author"`
+		DisplayName looseString `json:"display_name"`
+		Nicename    looseString `json:"user_nicename"`
+		Profile     looseString `json:"profile"`
+		Author      looseString `json:"author"`
 	}
 	if err := json.Unmarshal(data, &object); err != nil {
 		return fmt.Errorf("unexpected author field: %w", err)
 	}
-	a.Name = strings.TrimSpace(html.UnescapeString(object.DisplayName))
+	a.Name = strings.TrimSpace(html.UnescapeString(string(object.DisplayName)))
 	if a.Name == "" {
-		a.Name = strings.TrimSpace(html.UnescapeString(object.Author))
+		a.Name = strings.TrimSpace(html.UnescapeString(string(object.Author)))
 	}
-	a.Username, a.Profile = object.Nicename, object.Profile
+	a.Username, a.Profile = string(object.Nicename), string(object.Profile)
+	return nil
+}
+
+// looseString decodes a string and reads any other JSON value, such as the
+// false the directory sends for a missing field, as empty.
+type looseString string
+
+func (s *looseString) UnmarshalJSON(data []byte) error {
+	var text string
+	if json.Unmarshal(data, &text) == nil {
+		*s = looseString(text)
+	}
 	return nil
 }
 

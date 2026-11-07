@@ -183,3 +183,20 @@ func TestNumericVersionsDecodeVerbatim(t *testing.T) {
 		}
 	}
 }
+
+func TestAuthorFalseOrNullIsEmpty(t *testing.T) {
+	for _, in := range []string{`false`, `null`} {
+		var a author
+		if err := json.Unmarshal([]byte(in), &a); err != nil || a != (author{}) {
+			t.Fatalf("%s: author=%+v err=%v", in, a, err)
+		}
+	}
+}
+
+func TestAuthorObjectFalseFieldsAreEmpty(t *testing.T) {
+	var a author
+	in := `{"user_nicename":"acme","display_name":false,"profile":"https://profiles.wordpress.org/acme/","author":false}`
+	if err := json.Unmarshal([]byte(in), &a); err != nil || a != (author{Username: "acme", Profile: "https://profiles.wordpress.org/acme/"}) {
+		t.Fatalf("author=%+v err=%v", a, err)
+	}
+}
