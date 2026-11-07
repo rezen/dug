@@ -3,8 +3,8 @@ set -eu
 cd "$(dirname "$0")/.."
 mode=${1:-check}
 case "$mode" in
-  check|test|vet|fmt) ;;
-  *) echo "Usage: $0 [check|test|vet|fmt] [module]" >&2; exit 2 ;;
+  check|test|vet|fmt|lint) ;;
+  *) echo "Usage: $0 [check|test|vet|fmt|lint] [module]" >&2; exit 2 ;;
 esac
 # ./... stops at nested go.mod boundaries; enumerate the workspace explicitly.
 if [ -n "${2:-}" ]; then
@@ -18,6 +18,7 @@ for module do
     test) go -C "$module" test -race ./... ;;
     vet) go -C "$module" vet ./... ;;
     fmt) go -C "$module" fmt ./... ;;
+    lint) go -C "$module" run honnef.co/go/tools/cmd/staticcheck@latest ./... ;;
   esac
 done
 if [ "$mode" = check ]; then

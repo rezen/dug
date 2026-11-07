@@ -22,6 +22,10 @@ test module="":
 vet module="":
     sh scripts/check.sh vet "$1"
 
+# Run staticcheck for every module, or one module.
+lint module="":
+    sh scripts/check.sh lint "$1"
+
 # Format Go code in every module and the justfile.
 fmt:
     sh scripts/check.sh fmt
