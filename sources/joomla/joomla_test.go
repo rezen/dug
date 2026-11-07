@@ -33,9 +33,9 @@ func sum256(data []byte) string {
 }
 
 type fakeExt struct {
-	slug, install, license, author, updated string
-	reviews, score                          int
-	types                                   []string
+	slug, install, license, author, updated, version string
+	reviews, score                                   int
+	types                                            []string
 }
 
 // fake mimics the Install from Web catalog: JSON envelopes around HTML
@@ -49,6 +49,8 @@ type fake struct {
 	downloads  atomic.Int32
 	server     *httptest.Server
 }
+
+const directZip = "PK\x03\x04 pretend archive for a directly linked extension"
 
 func newFake(t *testing.T) *fake {
 	f := &fake{categories: map[string][]int{}, extensions: map[int]fakeExt{}, files: map[string]string{}}
@@ -129,11 +131,15 @@ func (f *fake) serve(w http.ResponseWriter, r *http.Request) {
 		for _, kind := range e.types {
 			fmt.Fprintf(&badges, `<span title="%s" class="badge jbadge badge-j%s">%s</span>&nbsp;`, kind, strings.ToLower(kind), kind)
 		}
+		version := e.version
+		if version == "" {
+			version = "1.0"
+		}
 		install := ""
 		if e.install != "" {
 			install = fmt.Sprintf(`<a class="install btn btn-success" href="#" onclick="return Joomla.installfromweb('%s', '%s')"><span class="icon-checkmark" aria-hidden="true"></span> Install</a>`, strings.ReplaceAll(e.install, "{base}", f.server.URL), e.slug)
 		}
-		envelope(w, fmt.Sprintf(`<div class="com-apps-container"><div class="rating"><a target="_blank" href="https://extensions.joomla.org/extension/%s/#reviews">%d reviews with a score of %d/100</a></div><dl class="dl-horizontal"><dt>Version</dt><dd>1.0 (last updated on %s)</dd><dt>License</dt><dd>%s</dd><dt>Download Type</dt><dd>Free download</dd></dl><div class="item-badge-container">%s</div><div class="item-buttons form-actions">%s</div><div class="item-desc"><p class="item-desc-title"><strong>%s</strong> (By %s)</p></div></div>`, e.slug, e.reviews, e.score, e.updated, e.license, badges.String(), install, e.slug, e.author))
+		envelope(w, fmt.Sprintf(`<div class="com-apps-container"><div class="rating"><a target="_blank" href="https://extensions.joomla.org/extension/%s/#reviews">%d reviews with a score of %d/100</a></div><dl class="dl-horizontal"><dt>Version</dt><dd>%s (last updated on %s)</dd><dt>License</dt><dd>%s</dd><dt>Download Type</dt><dd>Free download</dd></dl><div class="item-badge-container">%s</div><div class="item-buttons form-actions">%s</div><div class="item-desc"><p class="item-desc-title"><strong>%s</strong> (By %s)</p></div></div>`, e.slug, e.reviews, e.score, version, e.updated, e.license, badges.String(), install, e.slug, e.author))
 	default:
 		http.Error(w, "unknown view", http.StatusBadRequest)
 	}
@@ -181,8 +187,11 @@ func catalog(t *testing.T) (*fake, map[string]string) {
 		f.files[key] = strings.ReplaceAll(value, "{base}", f.server.URL)
 	}
 	f.extensions[80] = fakeExt{slug: "demo-backup", install: "{base}/updates/demo.xml", license: "GPLv2 or later", author: "Demo Ltd", updated: "04 September 2026", reviews: 12, score: 98, types: []string{"Component", "Plugin"}}
-	f.extensions[81] = fakeExt{slug: "direct-zip", install: "{base}/dl/direct.zip", reviews: 1, score: 100}
+	f.files["/dl/direct.zip"] = directZip
+	f.extensions[81] = fakeExt{slug: "direct-zip", install: "{base}/dl/direct.zip", version: "2.5 beta", license: "MIT", updated: "01 March 2026", reviews: 1, score: 100, types: []string{"Module"}}
 	f.extensions[82] = fakeExt{slug: "no-install", reviews: 3, score: 80}
+	f.files["/landing.html"] = "<!DOCTYPE html><title>Buy now</title>"
+	f.extensions[86] = fakeExt{slug: "landing-page", install: "{base}/landing.html"}
 	f.extensions[83] = fakeExt{slug: "dead-manifest", install: "{base}/updates/missing.xml", reviews: 2, score: 60}
 	f.categories["9"] = []int{80, 81, 82}
 	f.categories["10"] = []int{82, 83, 80} // extensions appear in several categories
@@ -252,9 +261,9 @@ func TestDiscoverWalksCatalog(t *testing.T) {
 		depth string
 		want  []string
 	}{
-		"current":   {"", []string{"demo-backup@2.0.0"}},
-		"two":       {"2", []string{"demo-backup@2.0.0", "demo-backup@1.1.0"}},
-		"unlimited": {"unlimited", []string{"demo-backup@2.0.0", "demo-backup@1.1.0", "demo-backup@1.0.0"}},
+		"current":   {"", []string{"demo-backup@2.0.0", "direct-zip@2.5-beta"}},
+		"two":       {"2", []string{"demo-backup@2.0.0", "demo-backup@1.1.0", "direct-zip@2.5-beta"}},
+		"unlimited": {"unlimited", []string{"demo-backup@2.0.0", "demo-backup@1.1.0", "demo-backup@1.0.0", "direct-zip@2.5-beta"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f, bodies := catalog(t)
@@ -284,7 +293,7 @@ func TestDiscoverWalksCatalog(t *testing.T) {
 			if !maps.Equal(first.Attributes, wantAttrs) {
 				t.Errorf("attributes = %v, want %v", first.Attributes, wantAttrs)
 			}
-			wantMeta := map[string]string{"rating": "98", "num_ratings": "12", "license": "GPLv2 or later", "version_rank": "1"}
+			wantMeta := map[string]string{"rating": "98", "num_ratings": "12", "license": "GPLv2 or later", "version_rank": "1", "source": "update-manifest"}
 			if !maps.Equal(first.Metadata, wantMeta) {
 				t.Errorf("metadata = %v, want %v", first.Metadata, wantMeta)
 			}
@@ -300,20 +309,26 @@ func TestDiscoverWalksCatalog(t *testing.T) {
 			if first.Author == nil || first.Author.Name != "Demo Ltd" {
 				t.Errorf("author = %+v", first.Author)
 			}
-			if len(refs) > 1 {
-				if refs[1].Metadata["version_rank"] != "2" {
-					t.Errorf("second version rank = %q", refs[1].Metadata["version_rank"])
-				}
-				if refs[1].Attributes["sha256"] != sum256([]byte(bodies["1.1.0"])) {
-					t.Errorf("published sha256 not pinned: %v", refs[1].Attributes)
-				}
-				if refs[len(refs)-1].Attributes["size"] != "" && refs[len(refs)-1].Version == "1.0.0" {
-					t.Errorf("size invented for a release without length")
+			var demo []registry.Reference
+			for _, r := range refs {
+				if r.Name == "demo-backup" {
+					demo = append(demo, r)
 				}
 			}
-			// Facts are cloned per version.
-			if len(refs) > 1 && refs[0].Facts == refs[1].Facts {
-				t.Error("references share one Facts value")
+			if len(demo) > 1 {
+				if demo[1].Metadata["version_rank"] != "2" {
+					t.Errorf("second version rank = %q", demo[1].Metadata["version_rank"])
+				}
+				if demo[1].Attributes["sha256"] != sum256([]byte(bodies["1.1.0"])) {
+					t.Errorf("published sha256 not pinned: %v", demo[1].Attributes)
+				}
+				if last := demo[len(demo)-1]; last.Version == "1.0.0" && last.Attributes["size"] != "" {
+					t.Errorf("size invented for a release without length")
+				}
+				// Facts are cloned per version.
+				if demo[0].Facts == demo[1].Facts {
+					t.Error("references share one Facts value")
+				}
 			}
 		})
 	}
@@ -350,7 +365,7 @@ func TestExplicitSelection(t *testing.T) {
 		ids, slugs []string
 		want       string
 	}{
-		"direct zip":    {ids: []string{"81"}, want: "not an update manifest"},
+		"landing page":  {ids: []string{"86"}, want: "not a zip archive"},
 		"no install":    {ids: []string{"82"}, want: "no install URL"},
 		"dead manifest": {slugs: []string{"dead-manifest"}, want: "manifest unavailable"},
 		"unknown id":    {ids: []string{"999"}, want: "999"},
@@ -621,7 +636,7 @@ func TestCatalogSurvivesBrokenManifests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := versions(refs); !slices.Equal(got, []string{"demo-backup@2.0.0"}) {
+	if got := versions(refs); !slices.Equal(got, []string{"demo-backup@2.0.0", "direct-zip@2.5-beta"}) {
 		t.Errorf("versions = %v", got)
 	}
 }
@@ -736,8 +751,206 @@ func TestManifestURLsAreNormalized(t *testing.T) {
 		"https://github.com/acme/demo/blob/master":                 "https://github.com/acme/demo/blob/master",
 		"https://example.com/acme/demo/blob/master/updates.xml":    "https://example.com/acme/demo/blob/master/updates.xml",
 	} {
-		if got := normalizeManifestURL(in); got != want {
-			t.Errorf("normalizeManifestURL(%q) = %q, want %q", in, got, want)
+		if got := normalizeInstallURL(in); got != want {
+			t.Errorf("normalizeInstallURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestDirectArchiveIsPinnedAtListing(t *testing.T) {
+	f, _ := catalog(t)
+	s := f.source()
+	s.IDs = []string{"81"}
+	s.VersionDepth = "unlimited" // a direct link has no history to add
+	refs, err := discover(t, s)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("%v, %v", versions(refs), err)
+	}
+	ref := refs[0]
+	wantAttrs := map[string]string{
+		"extension_id": "81",
+		"download_url": f.server.URL + "/dl/direct.zip",
+		"sha256":       sum256([]byte(directZip)),
+		"size":         strconv.Itoa(len(directZip)),
+	}
+	if !maps.Equal(ref.Attributes, wantAttrs) {
+		t.Errorf("attributes = %v, want %v", ref.Attributes, wantAttrs)
+	}
+	wantMeta := map[string]string{"rating": "100", "num_ratings": "1", "license": "MIT", "version_rank": "1", "source": "directory-link"}
+	if !maps.Equal(ref.Metadata, wantMeta) {
+		t.Errorf("metadata = %v, want %v", ref.Metadata, wantMeta)
+	}
+	if ref.Version != "2.5-beta" || !slices.Equal(ref.Tags, []string{"module"}) {
+		t.Errorf("version %q tags %v", ref.Version, ref.Tags)
+	}
+	if ref.Facts == nil || ref.Facts.UpdatedAt == nil || !ref.Facts.UpdatedAt.Equal(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("facts = %+v", ref.Facts)
+	}
+
+	downloads := f.downloads.Load()
+	art, err := s.Resolve(context.Background(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.downloads.Load() != downloads {
+		t.Error("Resolve downloaded the archive")
+	}
+	blob := art.Blobs[0]
+	if blob.Digest != "sha256:"+sum256([]byte(directZip)) || art.Revision != blob.Digest || blob.Size != int64(len(directZip)) {
+		t.Errorf("blob %+v revision %q", blob, art.Revision)
+	}
+	body, err := blob.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(body)
+	body.Close()
+	if string(data) != directZip {
+		t.Errorf("downloaded %q", data)
+	}
+}
+
+func TestDirectLinkRejections(t *testing.T) {
+	f, _ := catalog(t)
+	f.files["/dl/empty.zip"] = ""
+	f.files["/dl/big.zip"] = directZip + strings.Repeat("x", 1000)
+	f.extensions[90] = fakeExt{slug: "empty", install: "{base}/dl/empty.zip"}
+	f.extensions[91] = fakeExt{slug: "gone", install: "{base}/dl/gone.zip"}
+	f.extensions[92] = fakeExt{slug: "big", install: "{base}/dl/big.zip"}
+	f.extensions[93] = fakeExt{slug: "no-version", install: "{base}/dl/direct.zip", version: "-"}
+	for id, want := range map[string]string{
+		"90": "not a zip archive",
+		"91": "package unavailable",
+		"92": "package unavailable",
+		"93": "no usable version",
+	} {
+		s := f.source()
+		s.IDs = []string{id}
+		s.MaxPackageBytes = 200
+		if _, err := discover(t, s); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("id %s: error = %v, want %q", id, err, want)
+		}
+	}
+	// A catalog walk skips them instead of failing.
+	f.categories["9"] = append(f.categories["9"], 90, 91, 92, 93)
+	s := f.source()
+	s.MaxPackageBytes = 200
+	refs, err := discover(t, s)
+	if err != nil || !slices.Equal(versions(refs), []string{"demo-backup@2.0.0", "direct-zip@2.5-beta"}) {
+		t.Fatalf("%v, %v", versions(refs), err)
+	}
+}
+
+func TestZipServedFromAnXMLPathIsADirectLink(t *testing.T) {
+	f := newFake(t)
+	f.files["/dl/updates.joomla.xml"] = directZip
+	f.extensions[5] = fakeExt{slug: "odd-server", install: "{base}/dl/updates.joomla.xml", version: "4.1"}
+	s := f.source()
+	s.IDs = []string{"5"}
+	refs, err := discover(t, s)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("%v, %v", versions(refs), err)
+	}
+	if _, has := refs[0].Attributes["manifest_url"]; has || refs[0].Metadata["source"] != "directory-link" || refs[0].Version != "4.1" {
+		t.Errorf("reference = %+v", refs[0])
+	}
+}
+
+func TestResolveRejectsTamperedDirectReferences(t *testing.T) {
+	f, _ := catalog(t)
+	s := f.source()
+	s.IDs = []string{"81"}
+	refs, _ := discover(t, s)
+	good := refs[0]
+	if _, err := s.Resolve(context.Background(), good); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*registry.Reference){
+		"no digest": func(r *registry.Reference) { delete(r.Attributes, "sha256") },
+		"no size":   func(r *registry.Reference) { delete(r.Attributes, "size") },
+		"sha512 only": func(r *registry.Reference) {
+			delete(r.Attributes, "sha256")
+			r.Attributes["sha512"] = sum512([]byte("x"))
+		},
+		"extra sha512":     func(r *registry.Reference) { r.Attributes["sha512"] = sum512([]byte("x")) },
+		"bad digest":       func(r *registry.Reference) { r.Attributes["sha256"] = "zz" },
+		"off-host URL":     func(r *registry.Reference) { r.Attributes["download_url"] = "http://169.254.169.254/latest/meta-data/" },
+		"empty manifest":   func(r *registry.Reference) { r.Attributes["manifest_url"] = "" },
+		"zero size":        func(r *registry.Reference) { r.Attributes["size"] = "0" },
+		"uppercase digest": func(r *registry.Reference) { r.Attributes["sha256"] = strings.ToUpper(r.Attributes["sha256"]) },
+	} {
+		ref := good
+		ref.Attributes = maps.Clone(good.Attributes)
+		mutate(&ref)
+		if _, err := s.Resolve(context.Background(), ref); err == nil {
+			t.Errorf("%s: resolved a tampered reference", name)
+		}
+	}
+}
+
+func TestDirectLinkHostRule(t *testing.T) {
+	s := &Source{}
+	for raw, ok := range map[string]bool{
+		"https://example.com/downloads/ext.zip":                   true,
+		"https://github.com/acme/x/archive/refs/heads/master.zip": true,
+		"http://example.com/ext.zip":                              false,
+		"https://example.com:8443/ext.zip":                        false,
+		"https://169.254.169.254/ext.zip":                         false,
+		"https://127.0.0.1/ext.zip":                               false,
+		"https://localhost/ext.zip":                               false,
+		"https://nas.local/ext.zip":                               false,
+		"https://user@example.com/ext.zip":                        false,
+		"":                                                        false,
+	} {
+		if err := s.checkDirect(raw); (err == nil) != ok {
+			t.Errorf("checkDirect(%q) = %v, want ok=%v", raw, err, ok)
+		}
+	}
+}
+
+func TestDeveloperRedirectsStayPublic(t *testing.T) {
+	s := &Source{Client: http.DefaultClient}
+	client := s.external()
+	if client == http.DefaultClient || http.DefaultClient.CheckRedirect != nil {
+		t.Fatal("the shared client must not be modified")
+	}
+	request := func(raw string) *http.Request {
+		r, _ := http.NewRequest(http.MethodGet, raw, nil)
+		return r
+	}
+	for raw, ok := range map[string]bool{
+		"https://cdn.example.com/ext.zip":           true,
+		"http://cdn.example.com/ext.zip":            false,
+		"https://169.254.169.254/latest/meta-data/": false,
+		"https://10.0.0.5/ext.zip":                  false,
+		"https://localhost/ext.zip":                 false,
+	} {
+		if err := client.CheckRedirect(request(raw), nil); (err == nil) != ok {
+			t.Errorf("redirect to %q: %v, want ok=%v", raw, err, ok)
+		}
+	}
+	if err := client.CheckRedirect(request("https://cdn.example.com/x"), make([]*http.Request, 10)); err == nil {
+		t.Error("redirect loop not stopped")
+	}
+	// With an allowlist (tests), the client is left alone.
+	t2 := &Source{Client: http.DefaultClient, DownloadHosts: []string{"x"}}
+	if t2.external() != http.DefaultClient {
+		t.Error("allowlist mode replaced the client")
+	}
+}
+
+func TestCleanVersion(t *testing.T) {
+	for in, want := range map[string]string{
+		"10.4.0 ":    "10.4.0",
+		"3.0 beta":   "3.0-beta",
+		" 1.2  RC1 ": "1.2-RC1",
+		"":           "",
+		"-":          "",
+		"v1/2":       "",
+		"1.0;rm":     "",
+	} {
+		if got := cleanVersion(in); got != want {
+			t.Errorf("cleanVersion(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

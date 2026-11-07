@@ -1,8 +1,11 @@
-// Package joomla archives Joomla extensions that the Joomla Extensions
-// Directory's Install from Web catalog offers with an HTTPS update-server
-// manifest. The directory is an index, not a host: the packages live on each
-// developer's own server, so the source follows the manifest the directory
-// links, pins the digest it publishes, and skips anything it cannot verify.
+// Package joomla archives Joomla extensions listed in the Joomla Extensions
+// Directory's Install from Web catalog. The directory is an index, not a host:
+// the packages live on each developer's own server. An install URL that is an
+// update-server manifest yields every stable release it advertises, pinned with
+// the digest the manifest publishes. An install URL that is a zip yields one
+// release, pinned by streaming the archive through SHA-256 at listing time.
+// Anything else (landing pages, plain-HTTP-only hosts, archives over the size
+// limit) is skipped.
 package joomla
 
 import (
@@ -32,6 +35,7 @@ import (
 	"github.com/rezen/dug/sdk/httpx"
 	"github.com/rezen/dug/sdk/registry"
 	"github.com/rezen/dug/sdk/retry"
+	"github.com/rezen/dug/sdk/services"
 )
 
 // Identity is the registry name the host selects: `dug list joomla`.
@@ -50,10 +54,11 @@ const DefaultEndpoint = "https://appscdn.joomla.org/webapps/index.php"
 var ReleaseHosts = []string{"github.com", "codeload.github.com", "raw.githubusercontent.com"}
 
 const (
-	maxMetadataBytes = 32 << 20
-	pageSize         = 100
-	maxPages         = 1000
-	defaultWorkers   = 4
+	maxMetadataBytes  = 32 << 20
+	defaultMaxPackage = 512 << 20
+	pageSize          = 100
+	maxPages          = 1000
+	defaultWorkers    = 4
 )
 
 type Source struct {
@@ -71,6 +76,9 @@ type Source struct {
 	Categories   []string // catalog category IDs to walk; empty means all
 	VersionDepth string   // empty means the current release only
 	Concurrency  int      // extension and manifest lookups in flight; 0 means 4
+	// MaxPackageBytes is the largest directly linked archive the listing will
+	// pin; 0 means 512 MiB. Larger archives are skipped.
+	MaxPackageBytes int64
 }
 
 var _ registry.Registry = (*Source)(nil)
@@ -130,6 +138,16 @@ func validVersion(version string) error {
 	return nil
 }
 
+// cleanVersion turns the directory's version text into a version string, or
+// "" when nothing usable is left: "3.0 beta" becomes 3.0-beta.
+func cleanVersion(text string) string {
+	version := strings.Join(strings.Fields(text), "-")
+	if validVersion(version) != nil {
+		return ""
+	}
+	return version
+}
+
 func validID(kind, id string) error {
 	if !idPattern.MatchString(id) {
 		return fmt.Errorf("invalid %s %s %q", Identity, kind, id)
@@ -139,15 +157,21 @@ func validID(kind, id string) error {
 
 // extension is what the catalog's view of one extension tells us.
 type extension struct {
-	ID       string
-	Slug     string
-	Manifest string // the install URL the directory links; empty when none
-	License  string
-	Author   string
-	Types    []string
-	Rating   int64 // 0–100; -1 when unrated
-	Reviews  int64
-	Updated  time.Time
+	ID      string
+	Slug    string
+	Install string // the install URL the directory links; empty when none
+	// Manifest is Install once it is known to be an update manifest; empty for
+	// an extension linked straight to its archive.
+	Manifest string
+	// Version is the version the directory shows, normalized; it names the one
+	// release of an extension that has no manifest.
+	Version string
+	License string
+	Author  string
+	Types   []string
+	Rating  int64 // 0–100; -1 when unrated
+	Reviews int64
+	Updated time.Time
 }
 
 // release is one installable version from an extension's update manifest.
@@ -356,43 +380,153 @@ func (s *Source) lookup(ctx context.Context, target listed) outcome {
 		return outcome{err: err}
 	}
 	if s.DownloadHosts == nil {
-		ext.Manifest = normalizeManifestURL(ext.Manifest)
+		ext.Install = normalizeInstallURL(ext.Install)
 	}
 	out := outcome{ext: ext}
 	switch {
-	case ext.Manifest == "":
+	case ext.Install == "":
 		out.skip = "no install URL"
-	case !strings.HasSuffix(strings.ToLower(mustPath(ext.Manifest)), ".xml"):
-		out.skip = "install URL is not an update manifest"
+	case strings.HasSuffix(strings.ToLower(mustPath(ext.Install)), ".xml"):
+		s.manifestReleases(ctx, &out)
 	default:
-		if err := s.checkManifest(ext.Manifest); err != nil {
-			out.skip = err.Error()
-			break
-		}
-		releases, skipped, err := s.releases(ctx, ext)
-		switch {
-		case ctx.Err() != nil:
-			out.err = ctx.Err()
-		case err != nil:
-			// A developer's server being down or its manifest being
-			// malformed is that extension's problem, not the walk's.
-			slog.Warn("joomla manifest unavailable", "slug", ext.Slug, "manifest", ext.Manifest, "err", err)
-			out.skip = "manifest unavailable"
-		case len(releases) == 0:
-			out.skip = fmt.Sprintf("no release with a download and a digest (%d skipped)", skipped)
-		default:
-			out.releases = releases
-		}
+		s.directRelease(ctx, &out)
 	}
 	return out
 }
 
-// normalizeManifestURL repairs two forms the directory links that are not the
-// manifest itself. An http URL becomes https, because some entries still link
-// the plain form of a server that answers on both and the manifest is never
+// manifestReleases fills out from the extension's update manifest. A URL that
+// ends in .xml but serves a zip, as some download servers do, is handled as a
+// direct link.
+func (s *Source) manifestReleases(ctx context.Context, out *outcome) {
+	ext := out.ext
+	ext.Manifest = ext.Install
+	if err := s.checkManifest(ext.Manifest); err != nil {
+		out.skip = err.Error()
+		return
+	}
+	releases, skipped, err := s.releases(ctx, ext)
+	switch {
+	case ctx.Err() != nil:
+		out.err = ctx.Err()
+	case errors.Is(err, errNotManifest):
+		s.directRelease(ctx, out)
+	case err != nil:
+		// A developer's server being down or its manifest being malformed
+		// is that extension's problem, not the walk's.
+		slog.Warn("joomla manifest unavailable", "slug", ext.Slug, "manifest", ext.Manifest, "err", err)
+		out.skip = "manifest unavailable"
+	case len(releases) == 0:
+		out.skip = fmt.Sprintf("no release with a download and a digest (%d skipped)", skipped)
+	default:
+		out.ext, out.releases = ext, releases
+	}
+}
+
+// directRelease fills out for an extension the directory links straight to its
+// archive. The directory publishes no digest, size or history for it, so the
+// listing streams the archive once through SHA-256 and pins what it saw; stage
+// two then fails if the developer has since replaced the file.
+func (s *Source) directRelease(ctx context.Context, out *outcome) {
+	ext := out.ext
+	if ext.Version == "" {
+		out.skip = "the directory shows no usable version"
+		return
+	}
+	if err := s.checkDirect(ext.Install); err != nil {
+		out.skip = err.Error()
+		return
+	}
+	digest, size, err := s.pinPackage(ctx, ext.Install)
+	switch {
+	case ctx.Err() != nil:
+		out.err = ctx.Err()
+	case errors.Is(err, errNotZip):
+		out.skip = "install URL is not a zip archive"
+	case err != nil:
+		slog.Warn("joomla package unavailable", "slug", ext.Slug, "url", ext.Install, "err", err)
+		out.skip = "package unavailable"
+	default:
+		out.releases = []release{{Version: ext.Version, URL: ext.Install, Digests: map[string]string{"sha256": digest}, Size: size}}
+	}
+}
+
+var (
+	errNotZip      = errors.New("not a zip archive")
+	errNotManifest = errors.New("not an update manifest")
+	zipMagic       = []byte("PK\x03\x04")
+)
+
+func (s *Source) maxPackage() int64 {
+	if s.MaxPackageBytes > 0 {
+		return s.MaxPackageBytes
+	}
+	return defaultMaxPackage
+}
+
+// pinPackage downloads one archive, checks it starts like a zip, and returns
+// its SHA-256 and size. It never keeps the bytes.
+func (s *Source) pinPackage(ctx context.Context, raw string) (string, int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	response, err := httpx.Get(ctx, s.external(), raw, s.attempts())
+	if err != nil {
+		return "", 0, err
+	}
+	defer response.Body.Close()
+	limit := s.maxPackage()
+	if response.ContentLength > limit {
+		return "", 0, fmt.Errorf("package is %d bytes, over the %d byte limit", response.ContentLength, limit)
+	}
+	head := make([]byte, len(zipMagic))
+	if _, err := io.ReadFull(response.Body, head); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return "", 0, errNotZip
+		}
+		return "", 0, err
+	}
+	if !bytes.Equal(head, zipMagic) {
+		return "", 0, errNotZip
+	}
+	h := sha256.New()
+	h.Write(head)
+	n, err := io.Copy(h, io.LimitReader(response.Body, limit-int64(len(head))+1))
+	if err != nil {
+		return "", 0, err
+	}
+	if size := n + int64(len(head)); size <= limit {
+		return hex.EncodeToString(h.Sum(nil)), size, nil
+	}
+	return "", 0, fmt.Errorf("package exceeds the %d byte limit", limit)
+}
+
+// external returns the client for developers' servers. Their URLs come from
+// catalog entries anyone can submit, so every redirect hop must stay on HTTPS
+// to a public DNS name, and a link cannot bounce the plugin to an internal
+// address. Tests that supply an allowlist keep the shared client unchanged.
+func (s *Source) external() *http.Client {
+	client := s.Client
+	if client == nil {
+		client = services.DefaultDugHttpClient()
+	}
+	if s.DownloadHosts != nil {
+		return client
+	}
+	guarded := *client
+	guarded.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return publicHTTPS(req.URL.String())
+	}
+	return &guarded
+}
+
+// normalizeInstallURL repairs two forms the directory links that are not the
+// file itself. An http URL becomes https, because some entries still link
+// the plain form of a server that answers on both and nothing is
 // fetched over a channel anyone on the path could edit. A GitHub blob URL, which
 // is the HTML viewer, becomes the raw file it shows.
-func normalizeManifestURL(raw string) string {
+func normalizeInstallURL(raw string) string {
 	if rest, ok := strings.CutPrefix(raw, "http://"); ok {
 		raw = "https://" + rest
 	}
@@ -429,7 +563,10 @@ func (s *Source) extension(ctx context.Context, id string) (extension, error) {
 		ext.Rating, _ = strconv.ParseInt(m[2], 10, 64)
 	}
 	if m := versionLine.FindStringSubmatch(page); m != nil {
-		if d := updatedText.FindStringSubmatch(m[1]); d != nil {
+		text := html.UnescapeString(m[1])
+		before, _, _ := strings.Cut(text, "(last updated on")
+		ext.Version = cleanVersion(before)
+		if d := updatedText.FindStringSubmatch(text); d != nil {
 			if t, err := time.Parse("2 January 2006", d[1]); err == nil {
 				ext.Updated = t
 			}
@@ -445,7 +582,7 @@ func (s *Source) extension(ctx context.Context, id string) (extension, error) {
 		ext.Types = append(ext.Types, m[1])
 	}
 	if m := installCall.FindStringSubmatch(page); m != nil {
-		ext.Manifest = strings.TrimSpace(html.UnescapeString(m[1]))
+		ext.Install = strings.TrimSpace(html.UnescapeString(m[1]))
 	}
 	return ext, nil
 }
@@ -461,7 +598,7 @@ func (s *Source) page(ctx context.Context, q url.Values) (string, error) {
 			HTML string `json:"html"`
 		} `json:"data"`
 	}
-	data, err := s.fetch(ctx, s.endpoint()+"?"+q.Encode())
+	data, err := s.fetch(ctx, s.Client, s.endpoint()+"?"+q.Encode())
 	if err != nil {
 		return "", err
 	}
@@ -476,10 +613,10 @@ func (s *Source) page(ctx context.Context, q url.Values) (string, error) {
 
 // fetch reads one bounded metadata document. Failures that no retry can fix are
 // permanent so the host stops retrying too.
-func (s *Source) fetch(ctx context.Context, raw string) ([]byte, error) {
+func (s *Source) fetch(ctx context.Context, client *http.Client, raw string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	response, err := httpx.Get(ctx, s.Client, raw, s.attempts())
+	response, err := httpx.Get(ctx, client, raw, s.attempts())
 	if err != nil {
 		return nil, err
 	}
@@ -519,9 +656,12 @@ var digestSizes = map[string]int{"sha256": sha256.Size, "sha384": sha512.Size384
 // breaks the host rule. A version listed twice with different downloads is
 // ambiguous and is dropped.
 func (s *Source) releases(ctx context.Context, ext extension) ([]release, int, error) {
-	data, err := s.fetch(ctx, ext.Manifest)
+	data, err := s.fetch(ctx, s.external(), ext.Manifest)
 	if err != nil {
 		return nil, 0, err
+	}
+	if bytes.HasPrefix(data, zipMagic) {
+		return nil, 0, errNotManifest
 	}
 	var set updateSet
 	if err := xml.Unmarshal(data, &set); err != nil {
@@ -661,10 +801,11 @@ func (s *Source) emitVersions(ctx context.Context, ext extension, releases []rel
 	for i, rel := range releases {
 		versionMetadata := maps.Clone(metadata)
 		versionMetadata["version_rank"] = strconv.Itoa(i + 1)
-		attributes := map[string]string{
-			"extension_id": ext.ID,
-			"manifest_url": ext.Manifest,
-			"download_url": rel.URL,
+		attributes := map[string]string{"extension_id": ext.ID, "download_url": rel.URL}
+		versionMetadata["source"] = "directory-link"
+		if ext.Manifest != "" {
+			attributes["manifest_url"] = ext.Manifest
+			versionMetadata["source"] = "update-manifest"
 		}
 		for algorithm, value := range rel.Digests {
 			attributes[algorithm] = value
@@ -740,6 +881,17 @@ func (s *Source) checkManifest(raw string) error {
 	return nil
 }
 
+// checkDirect applies the rule for an archive the directory links itself: HTTPS
+// to a public DNS name. There is no manifest to tie the host to, so the pinned
+// digest is what binds the bytes; the host rule only keeps the plugin off
+// internal addresses. Run the plugin without access to internal networks.
+func (s *Source) checkDirect(raw string) error {
+	if s.DownloadHosts != nil {
+		return httpx.ValidateURLHost(raw, s.DownloadHosts)
+	}
+	return publicHTTPS(raw)
+}
+
 // checkDownload applies the download host rule: a package may only be fetched
 // from the host of the manifest that published it (with or without www.), or
 // from a GitHub release host, over HTTPS to a public DNS name. Inventories live in S3 and could be
@@ -809,16 +961,21 @@ func (s *Source) Resolve(ctx context.Context, ref registry.Reference) (registry.
 	if err := validID("extension ID", ref.Attributes["extension_id"]); err != nil {
 		return registry.Artifact{}, err
 	}
-	manifest, raw := ref.Attributes["manifest_url"], ref.Attributes["download_url"]
-	if !strings.HasSuffix(strings.ToLower(mustPath(manifest)), ".xml") {
-		return registry.Artifact{}, fmt.Errorf("invalid %s manifest URL", Identity)
-	}
-	if s.DownloadHosts != nil {
-		if err := httpx.ValidateURLHost(manifest, s.DownloadHosts); err != nil {
+	manifest, hasManifest := ref.Attributes["manifest_url"]
+	raw := ref.Attributes["download_url"]
+	if hasManifest {
+		if !strings.HasSuffix(strings.ToLower(mustPath(manifest)), ".xml") {
+			return registry.Artifact{}, fmt.Errorf("invalid %s manifest URL", Identity)
+		}
+		if s.DownloadHosts != nil {
+			if err := httpx.ValidateURLHost(manifest, s.DownloadHosts); err != nil {
+				return registry.Artifact{}, err
+			}
+		}
+		if err := s.checkDownload(manifest, raw); err != nil {
 			return registry.Artifact{}, err
 		}
-	}
-	if err := s.checkDownload(manifest, raw); err != nil {
+	} else if err := s.checkDirect(raw); err != nil {
 		return registry.Artifact{}, err
 	}
 	digests := map[string]string{}
@@ -830,6 +987,13 @@ func (s *Source) Resolve(ctx context.Context, ref registry.Reference) (registry.
 	verify, err := parseDigests(digests)
 	if err != nil {
 		return registry.Artifact{}, err
+	}
+	if !hasManifest {
+		// A directly linked archive is pinned by the listing itself, so its
+		// descriptor is only complete with a SHA-256 and a size.
+		if _, ok := digests["sha256"]; !ok || len(digests) != 1 || ref.Attributes["size"] == "" {
+			return registry.Artifact{}, fmt.Errorf("%s directly linked archive needs a SHA-256 and a size", Identity)
+		}
 	}
 	size := int64(-1)
 	if value, ok := ref.Attributes["size"]; ok {
@@ -856,7 +1020,7 @@ func (s *Source) Resolve(ctx context.Context, ref registry.Reference) (registry.
 		}
 	}
 	blob.Open = func(ctx context.Context) (io.ReadCloser, error) {
-		response, err := httpx.Get(ctx, s.Client, raw, s.attempts())
+		response, err := httpx.Get(ctx, s.external(), raw, s.attempts())
 		if err != nil {
 			return nil, err
 		}
