@@ -136,6 +136,14 @@ Joomla: dug-joomla (use --plugin-url http://127.0.0.1:7790)
   --option ids=80,1737
   --option categories=23,20
 
+Events (list/sync/download): discovered, downloaded, skipped and failed events are
+queued and delivered in batches by background subscribers, so they never slow the run.
+  --events-db FILE          record events in SQLite (table "events")
+  --events-webhook URL      POST {"events": [...]} batches; set DUG_EVENTS_WEBHOOK_SECRET
+                            to sign bodies in the X-Dug-Signature header (HMAC-SHA256)
+If a subscriber falls more than --events-buffer events behind, events are dropped
+and counted in a final warning; S3 remains the durable record.
+
 Run a command with --help for transfer and storage options.
 `
 
@@ -209,6 +217,8 @@ func executeWithStore(ctx context.Context, args []string, stdout, stderr io.Writ
 	flags.IntVar(&inventoryOpts.PartEntries, "inventory-part-entries", inventoryOpts.PartEntries, "Entries per uploaded inventory part; parts upload while listing runs so an interrupted listing keeps what it saved")
 	flags.IntVar(&inventoryOpts.SortBufferBytes, "sort-buffer-bytes", inventoryOpts.SortBufferBytes, "Approximate encoded metadata bytes per sorting run")
 	quiet := flags.Bool("quiet", false, "Suppress progress and per-resource completion/skip logs (failures are still logged)")
+	var eventOpts eventSettings
+	eventOpts.register(flags)
 	s3opts := storage.S3Options{}
 	bucket, endpoint, region := os.Getenv("DUG_BUCKET"), os.Getenv("DUG_S3_ENDPOINT"), envOr("AWS_REGION", "us-east-1")
 	if local {
@@ -272,7 +282,7 @@ func executeWithStore(ctx context.Context, args []string, stdout, stderr io.Writ
 	// Each package validates its own limits; running those checks here fails
 	// before any listing or storage work starts.
 	inventoryOpts.TempDir, inventoryOpts.Attempts, inventoryOpts.Timeout = opts.TempDir, opts.Attempts, opts.Timeout
-	for _, err := range []error{opts.Validate(), inventoryOpts.Validate(), s3opts.Validate()} {
+	for _, err := range []error{opts.Validate(), inventoryOpts.Validate(), s3opts.Validate(), eventOpts.validate()} {
 		if err != nil {
 			return usageError{err}
 		}
@@ -329,6 +339,11 @@ func executeWithStore(ctx context.Context, args []string, stdout, stderr io.Writ
 		return err
 	}
 	logger := slog.New(slog.NewJSONHandler(stderr, nil))
+	bus, err := eventOpts.start(client, logger)
+	if err != nil {
+		return err
+	}
+	defer closeBus(bus, logger)
 	var remote *plugin.Client
 	// sync defaults to the last completed inventory for this query; only
 	// --rediscover (or no prior run) lists the catalog again.
@@ -362,6 +377,9 @@ func executeWithStore(ctx context.Context, args []string, stdout, stderr io.Writ
 			inventoryOpts.OnEntry = func(registry.Reference) error { listed.Add(1); return nil }
 			logger.Info("listing started", "registry", kind, "limit", listingLimit)
 			stopListing = startProgress(logger, "listing", func() []any { return []any{"entries", listed.Load()} })
+		}
+		if bus != nil {
+			inventoryOpts.OnEntry = publishDiscovery(bus, inventoryOpts.OnEntry)
 		}
 		header := inventory.Header{Registry: kind, Provider: provider.ID, Kind: definition.Kind, Options: pluginOptions, Limit: listingLimit}
 		summary, err := inventory.Create(ctx, remote, store, header, inventoryOpts)
@@ -402,6 +420,7 @@ func executeWithStore(ctx context.Context, args []string, stdout, stderr io.Writ
 	}
 	var done, failed atomic.Int64
 	opts.OnEvent = func(event engine.Event) {
+		publishDownload(bus, event)
 		args := []any{"registry", event.Reference.Registry, "name", event.Reference.Name, "version", event.Reference.Version}
 		if event.Error != nil {
 			failed.Add(1)

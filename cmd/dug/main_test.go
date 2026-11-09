@@ -7,13 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/rezen/dug/events"
 	"github.com/rezen/dug/inventory"
 	"github.com/rezen/dug/sdk/plugin"
 	"github.com/rezen/dug/sdk/registry"
@@ -348,6 +351,72 @@ func TestRediscoverRejectedOutsideSync(t *testing.T) {
 	} {
 		if err := executeWithStore(context.Background(), args, io.Discard, io.Discard, factory); err == nil {
 			t.Fatalf("%v accepted", args)
+		}
+	}
+}
+
+func TestSyncRecordsDiscoveryAndDownloadEvents(t *testing.T) {
+	source := &stagedFixture{}
+	handler, err := plugin.NewHandler(plugin.ServerOptions{Registry: "test", Factory: func(map[string]string) (registry.Registry, error) { return source, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	var hooked sync.Map
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Events []events.Event `json:"events"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		for _, event := range payload.Events {
+			hooked.Store(string(event.Kind)+"/"+event.Reference.Name, true)
+		}
+	}))
+	defer hook.Close()
+	store := memstore.New()
+	factory := func(context.Context, storage.S3Options) (storage.ReadableStore, error) { return store, nil }
+	db := filepath.Join(t.TempDir(), "events.db")
+	var out, logs bytes.Buffer
+	args := []string{"sync", "test", "--bucket", "test", "--plugin-url", server.URL, "--concurrency", "1", "--events-db", db, "--events-webhook", hook.URL}
+	if err := executeWithStore(context.Background(), args, &out, &logs, factory); err != nil {
+		t.Fatalf("%v\n%s", err, logs.String())
+	}
+	sink, err := events.OpenSQLite(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	counts := map[string]int64{}
+	var rows []events.Row
+	if err := sink.DB().Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		counts[row.Kind]++
+	}
+	if counts["discovered"] != 3 || counts["downloaded"] != 3 || len(rows) != 6 {
+		t.Fatalf("sqlite counts = %v", counts)
+	}
+	for _, key := range []string{"discovered/a", "downloaded/z"} {
+		if _, ok := hooked.Load(key); !ok {
+			t.Errorf("webhook missed %s", key)
+		}
+	}
+}
+
+func TestInvalidEventSettings(t *testing.T) {
+	factory := func(context.Context, storage.S3Options) (storage.ReadableStore, error) { return memstore.New(), nil }
+	for _, args := range [][]string{
+		{"list", "test", "--bucket", "b", "--events-batch-size", "0"},
+		{"list", "test", "--bucket", "b", "--events-webhook", "ftp://x"},
+	} {
+		err := executeWithStore(context.Background(), args, io.Discard, io.Discard, factory)
+		var usage usageError
+		if !errors.As(err, &usage) {
+			t.Errorf("%v: err = %v, want usage error", args, err)
 		}
 	}
 }

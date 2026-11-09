@@ -15,3 +15,10 @@ registries:
     plugin-url: http://127.0.0.1:7782
     options:
       ids: [EXTENSION_ID]
+
+# Events: discovered/downloaded/skipped/failed, delivered in the background.
+# events-db: findings.db
+# events-webhook: https://example.com/hooks/dug   # secret: DUG_EVENTS_WEBHOOK_SECRET
+# events-batch-size: 500
+# events-flush-interval: 2s
+# events-buffer: 10000
