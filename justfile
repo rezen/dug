@@ -30,6 +30,10 @@ vet module="":
 lint module="":
     sh scripts/check.sh lint "$1"
 
+# Run govulncheck for every module, or one module.
+vuln module="":
+    sh scripts/check.sh vuln "$1"
+
 # Format Go code in every module and the justfile.
 fmt:
     sh scripts/check.sh fmt
