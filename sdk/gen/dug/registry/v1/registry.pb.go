@@ -64,7 +64,10 @@ type InfoResponse struct {
 	ProtocolVersion uint32                 `protobuf:"varint,2,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	// Optional for older plugins. Describes the provider's catalogs; this
 	// endpoint serves only the registry named above.
-	Provider      *Provider `protobuf:"bytes,3,opt,name=provider,proto3" json:"provider,omitempty"`
+	Provider *Provider `protobuf:"bytes,3,opt,name=provider,proto3" json:"provider,omitempty"`
+	// The source's own release version, such as 0.3.1. Optional; empty means
+	// unknown. Independent of protocol_version.
+	SourceVersion string `protobuf:"bytes,4,opt,name=source_version,json=sourceVersion,proto3" json:"source_version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -120,6 +123,13 @@ func (x *InfoResponse) GetProvider() *Provider {
 	return nil
 }
 
+func (x *InfoResponse) GetSourceVersion() string {
+	if x != nil {
+		return x.SourceVersion
+	}
+	return ""
+}
+
 type Provider struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -173,9 +183,11 @@ func (x *Provider) GetRegistries() []*RegistryDefinition {
 }
 
 type RegistryDefinition struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`     // stable, globally unique artifact/storage identity
-	Kind          string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"` // catalog name within the provider, e.g. plugins or themes
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`     // stable, globally unique artifact/storage identity
+	Kind  string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"` // catalog name within the provider, e.g. plugins or themes
+	// experimental, beta or stable. Optional for older plugins; empty means unknown.
+	Stability     string `protobuf:"bytes,3,opt,name=stability,proto3" json:"stability,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -220,6 +232,13 @@ func (x *RegistryDefinition) GetId() string {
 func (x *RegistryDefinition) GetKind() string {
 	if x != nil {
 		return x.Kind
+	}
+	return ""
+}
+
+func (x *RegistryDefinition) GetStability() string {
+	if x != nil {
+		return x.Stability
 	}
 	return ""
 }
@@ -1098,19 +1117,21 @@ var File_dug_registry_v1_registry_proto protoreflect.FileDescriptor
 const file_dug_registry_v1_registry_proto_rawDesc = "" +
 	"\n" +
 	"\x1edug/registry/v1/registry.proto\x12\x0fdug.registry.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\r\n" +
-	"\vInfoRequest\"\x8c\x01\n" +
+	"\vInfoRequest\"\xb3\x01\n" +
 	"\fInfoResponse\x12\x1a\n" +
 	"\bregistry\x18\x01 \x01(\tR\bregistry\x12)\n" +
 	"\x10protocol_version\x18\x02 \x01(\rR\x0fprotocolVersion\x125\n" +
-	"\bprovider\x18\x03 \x01(\v2\x19.dug.registry.v1.ProviderR\bprovider\"_\n" +
+	"\bprovider\x18\x03 \x01(\v2\x19.dug.registry.v1.ProviderR\bprovider\x12%\n" +
+	"\x0esource_version\x18\x04 \x01(\tR\rsourceVersion\"_\n" +
 	"\bProvider\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12C\n" +
 	"\n" +
 	"registries\x18\x02 \x03(\v2#.dug.registry.v1.RegistryDefinitionR\n" +
-	"registries\"8\n" +
+	"registries\"V\n" +
 	"\x12RegistryDefinition\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04kind\x18\x02 \x01(\tR\x04kind\"\x86\x04\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x1c\n" +
+	"\tstability\x18\x03 \x01(\tR\tstability\"\x86\x04\n" +
 	"\tReference\x12\x1a\n" +
 	"\bregistry\x18\x01 \x01(\tR\bregistry\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x12\n" +

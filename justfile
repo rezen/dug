@@ -18,6 +18,10 @@ check:
 test module="":
     sh scripts/check.sh test "$1"
 
+# Run live upstream contract tests for every source, or one such as sources/firefox. Needs network; GITHUB_TOKEN for github and obsidian.
+live module="":
+    sh scripts/live.sh "$1"
+
 # Run go vet for every module, or one module.
 vet module="":
     sh scripts/check.sh vet "$1"
@@ -51,9 +55,9 @@ web *args:
 local *args:
     go run ./cmd/dug local "$@"
 
-# Run one registry plugin in the foreground: wordpress, wordpress-themes, chrome, firefox, github, n8n, ansible-galaxy, obsidian, helm, or joomla.
+# Run one registry plugin in the foreground: wordpress, wordpress-themes, chrome, firefox, github, n8n, ansible-galaxy, obsidian, helm, joomla, or oci.
 plugin source *args:
-    @case "$1" in wordpress|wordpress-themes) module=wordpress ;; chrome|firefox|github|n8n|ansible-galaxy|obsidian|helm|joomla) module="$1" ;; *) echo "Unknown source: $1" >&2; exit 2;; esac; source_name="$1"; shift; exec go run "./sources/$module/cmd/dug-$source_name" "$@"
+    @case "$1" in wordpress|wordpress-themes) module=wordpress ;; chrome|firefox|github|n8n|ansible-galaxy|obsidian|helm|joomla|oci) module="$1" ;; *) echo "Unknown source: $1" >&2; exit 2;; esac; source_name="$1"; shift; exec go run "./sources/$module/cmd/dug-$source_name" "$@"
 
 # One command: start the source's plugin and local rclone S3 server, list it, stop the plugin. Extra args are host flags, e.g. --limit 20 --option namespaces=community.
 list source *args:

@@ -6,6 +6,6 @@ import "github.com/rezen/dug/sdk/registry"
 func Provider() registry.Provider {
 	return registry.Provider{
 		ID:         "github",
-		Registries: []registry.Definition{{ID: "github", Kind: "repositories"}},
+		Registries: []registry.Definition{{ID: "github", Kind: "repositories", Stability: registry.Stable}},
 	}
 }

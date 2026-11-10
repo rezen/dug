@@ -27,7 +27,7 @@ func providerToWire(provider registry.Provider) *registryv1.Provider {
 	}
 	wire := &registryv1.Provider{Id: provider.ID}
 	for _, definition := range provider.Registries {
-		wire.Registries = append(wire.Registries, &registryv1.RegistryDefinition{Id: definition.ID, Kind: definition.Kind})
+		wire.Registries = append(wire.Registries, &registryv1.RegistryDefinition{Id: definition.ID, Kind: definition.Kind, Stability: string(definition.Stability)})
 	}
 	return wire
 }
@@ -35,7 +35,7 @@ func providerToWire(provider registry.Provider) *registryv1.Provider {
 func providerFromWire(wire *registryv1.Provider) registry.Provider {
 	provider := registry.Provider{ID: wire.GetId()}
 	for _, definition := range wire.GetRegistries() {
-		provider.Registries = append(provider.Registries, registry.Definition{ID: definition.GetId(), Kind: definition.GetKind()})
+		provider.Registries = append(provider.Registries, registry.Definition{ID: definition.GetId(), Kind: definition.GetKind(), Stability: registry.Stability(definition.GetStability())})
 	}
 	return provider
 }

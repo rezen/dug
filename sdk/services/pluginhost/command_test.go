@@ -44,7 +44,7 @@ func TestRunConfiguresAndCleansUpClient(t *testing.T) {
 			validated, served := false, false
 			command := Command{
 				Registry: "test", DefaultAddress: "127.0.0.1:7781",
-				Provider: registry.Provider{ID: "example", Registries: []registry.Definition{{ID: "test", Kind: "packages"}}},
+				Provider: registry.Provider{ID: "example", Registries: []registry.Definition{{ID: "test", Kind: "packages", Stability: registry.Stable}}},
 				ConfigureFlags: func(flags *flag.FlagSet) {
 					flags.StringVar(&api, "api", "https://example.org", "API endpoint")
 				},
@@ -113,7 +113,7 @@ func TestRunDoesNotStartOnHelpOrInvalidInput(t *testing.T) {
 			command := Command{
 				Registry: "test", DefaultAddress: "127.0.0.1:7781",
 				ConfigureFlags: func(flags *flag.FlagSet) { flags.String("api", "https://example.org", "API endpoint") },
-				Provider:       registry.Provider{ID: "example", Registries: []registry.Definition{{ID: "test", Kind: "packages"}}},
+				Provider:       registry.Provider{ID: "example", Registries: []registry.Definition{{ID: "test", Kind: "packages", Stability: registry.Stable}}},
 				Validate:       func() error { return test.validation },
 				Factory: func(*http.Client) plugin.Factory {
 					t.Fatal("unexpected factory construction")
@@ -163,5 +163,56 @@ func TestRunRequiresDeclaredProviderRegistry(t *testing.T) {
 		if err := command.Run(context.Background(), nil, &stderr); err == nil {
 			t.Fatalf("accepted undeclared registry with provider %+v", provider)
 		}
+	}
+}
+
+func TestRunRequiresDeclaredStability(t *testing.T) {
+	for _, stability := range []registry.Stability{"", "mostly-done"} {
+		command := Command{
+			Registry: "test", DefaultAddress: "127.0.0.1:7781",
+			Provider: registry.Provider{ID: "example", Registries: []registry.Definition{{ID: "test", Kind: "packages", Stability: stability}}},
+			Factory: func(*http.Client) plugin.Factory {
+				t.Fatal("factory created without a valid stability")
+				return nil
+			},
+		}
+		var stderr bytes.Buffer
+		if err := command.Run(context.Background(), nil, &stderr); err == nil {
+			t.Fatalf("accepted stability %q", stability)
+		}
+	}
+}
+
+func TestVersionFlagAndHandshakeVersion(t *testing.T) {
+	old, oldOut := version, stdout
+	defer func() { version, stdout = old, oldOut }()
+	version = "v1.2.3"
+	var out bytes.Buffer
+	stdout = &out
+	command := Command{
+		Registry: "test", DefaultAddress: "127.0.0.1:7781",
+		Provider: registry.Provider{ID: "example", Registries: []registry.Definition{{ID: "test", Kind: "packages", Stability: registry.Beta}}},
+		Factory: func(*http.Client) plugin.Factory {
+			return func(map[string]string) (registry.Registry, error) { return nil, nil }
+		},
+	}
+	var stderr bytes.Buffer
+	if err := command.Run(context.Background(), []string{"--version"}, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "dug-test 1.2.3 (beta)\n" {
+		t.Fatalf("version output %q", out.String())
+	}
+	var served plugin.ServerOptions
+	err := command.run(context.Background(), nil, &stderr, func(_ context.Context, _ string, options plugin.ServerOptions) error {
+		served = options
+		return nil
+	})
+	if err != nil || served.Version != "1.2.3" {
+		t.Fatalf("err=%v served version %q", err, served.Version)
+	}
+	version = ""
+	if Version() == "" {
+		t.Fatal("unstamped builds must still report a version")
 	}
 }

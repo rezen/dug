@@ -28,9 +28,10 @@ func (output *listOutput) entry(ref registry.Reference) error {
 	case "jsonl":
 		return json.NewEncoder(output.stdout).Encode(struct {
 			registry.Reference
-			Provider string `json:"provider,omitempty"`
-			Kind     string `json:"kind,omitempty"`
-		}{ref, output.provider.ID, definition.Kind})
+			Provider  string             `json:"provider,omitempty"`
+			Kind      string             `json:"kind,omitempty"`
+			Stability registry.Stability `json:"stability,omitempty"`
+		}{ref, output.provider.ID, definition.Kind, definition.Stability})
 	default:
 		if !output.header {
 			if err := output.row("NAME", "VERSION", "PROVIDER", "KIND", "REGISTRY"); err != nil {

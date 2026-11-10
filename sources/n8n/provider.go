@@ -7,6 +7,6 @@ import "github.com/rezen/dug/sdk/registry"
 func Provider() registry.Provider {
 	return registry.Provider{
 		ID:         Identity,
-		Registries: []registry.Definition{{ID: Identity, Kind: "packages"}},
+		Registries: []registry.Definition{{ID: Identity, Kind: "packages", Stability: registry.Beta}},
 	}
 }

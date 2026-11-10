@@ -32,6 +32,7 @@ func TestInvalidProviders(t *testing.T) {
 		{ID: "wordpress", Registries: []Definition{{Kind: "plugins"}}},
 		{ID: "wordpress", Registries: []Definition{{ID: "wordpress", Kind: "plugins"}, {ID: "wordpress", Kind: "themes"}}},
 		{ID: "wordpress", Registries: []Definition{{ID: "wordpress", Kind: "plugins"}, {ID: "wordpress-themes", Kind: "plugins"}}},
+		{ID: "wordpress", Registries: []Definition{{ID: "wordpress", Kind: "plugins", Stability: "mostly-done"}}},
 	} {
 		if err := provider.Validate(); err == nil {
 			t.Errorf("accepted invalid provider %+v", provider)

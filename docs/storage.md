@@ -5,7 +5,7 @@ comes from the registry identity (`internal/layout`): `wordpress` is
 `wordpress/plugins`, `wordpress-themes` is `wordpress/themes`, `chrome` is
 `chrome/extensions`, `firefox` is `firefox/addons`, `github` is `github/repos`,
 `ansible-galaxy` is `ansible-galaxy/collections`, `helm` is `helm/charts`, `n8n` is
-`n8n/nodes`, `obsidian` is `obsidian/plugins`. A registry not listed there uses
+`n8n/nodes`, `obsidian` is `obsidian/plugins`, `oci` is `oci/images`. A registry not listed there uses
 `packages`; add new sources to that map.
 
 ```text

@@ -21,7 +21,7 @@ import (
 func TestListShowsEntriesAndLocalInventory(t *testing.T) {
 	handler, err := plugin.NewHandler(plugin.ServerOptions{
 		Registry: "wordpress",
-		Provider: registry.Provider{ID: "wordpress", Registries: []registry.Definition{{ID: "wordpress", Kind: "plugins"}}},
+		Provider: registry.Provider{ID: "wordpress", Registries: []registry.Definition{{ID: "wordpress", Kind: "plugins", Stability: registry.Beta}}},
 		Factory:  func(map[string]string) (registry.Registry, error) { return discoveryFixture{}, nil },
 	})
 	if err != nil {
@@ -76,7 +76,7 @@ func TestListShowsEntriesAndLocalInventory(t *testing.T) {
 					if err := decoder.Decode(&row); err != nil {
 						t.Fatal(err)
 					}
-					if row["name"] != "example" || row["provider"] != "wordpress" || row["kind"] != "plugins" || row["registry"] != "wordpress" {
+					if row["name"] != "example" || row["provider"] != "wordpress" || row["kind"] != "plugins" || row["registry"] != "wordpress" || row["stability"] != "beta" {
 						t.Fatalf("incorrect JSONL reference: %+v", row)
 					}
 				}

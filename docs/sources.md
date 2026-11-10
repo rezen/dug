@@ -325,3 +325,34 @@ because their URLs and digests exist only in per-version documents. Artifact Hub
 reports stars in search results only (so `--order=-number:stars` needs a walk, not
 `charts`) and no download counts or install base. See the
 [Helm module](../sources/helm/README.md).
+
+## OCI registries
+
+```sh
+./bin/dug-oci --listen 127.0.0.1:7791
+
+# In another terminal with the host S3 environment configured:
+./bin/dug sync oci --plugin-url http://127.0.0.1:7791 \
+  --option repos=docker.io/alpine,quay.io/coreos/etcd,ghcr.io/jqlang/jq --version-depth 3
+
+# Every official Docker Hub image for two platforms, or every public Quay repository.
+./bin/dug list oci --plugin-url http://127.0.0.1:7791 \
+  --option namespaces=docker.io/library --option platform=all
+./bin/dug list oci --plugin-url http://127.0.0.1:7791 --option registries=quay.io --limit 1000
+
+./bin/dug download oci --plugin-url http://127.0.0.1:7791 \
+  --inventory INVENTORY_KEY --order=-downloads --limit 100
+```
+
+The `oci` plugin speaks the OCI distribution API to Docker Hub, Quay, GHCR and ECR
+Public through the shared client in `sdk/services/oci`. Docker Hub and Quay enumerate
+through their catalog APIs; GHCR and ECR deny `/v2/_catalog`, so name their repositories
+with `repos`. With no selector it walks Docker Hub's official `library` namespace and
+every public Quay repository. A reference is one tag, named `HOST/REPOSITORY` and pinned
+to the manifest or index digest the tag pointed at; resolution fetches that digest and
+archives the index, the image manifests for the selected `platform` (`linux/amd64` by
+default, `all` includes attestations), their configs and layers. `max_layer_size` omits
+big layers with a warning. Listing makes no manifest requests, but resolution does, and
+Docker Hub allows 100 anonymous pulls per hour per IP, so a large run needs
+`DOCKER_HUB_USERNAME` and `DOCKER_HUB_TOKEN`. See the
+[OCI module](../sources/oci/README.md).

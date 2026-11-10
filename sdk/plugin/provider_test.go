@@ -17,11 +17,11 @@ func TestProviderHandshakePreservesCatalogIdentity(t *testing.T) {
 	for _, id := range []string{"wordpress", "wordpress-themes"} {
 		t.Run(id, func(t *testing.T) {
 			provider := registry.Provider{ID: "wordpress", Registries: []registry.Definition{
-				{ID: "wordpress", Kind: "plugins"}, {ID: "wordpress-themes", Kind: "themes"},
+				{ID: "wordpress", Kind: "plugins", Stability: registry.Stable}, {ID: "wordpress-themes", Kind: "themes", Stability: registry.Beta},
 			}}
 			expected := provider.Clone()
 			handler, err := plugin.NewHandler(plugin.ServerOptions{
-				Registry: id, Provider: provider,
+				Registry: id, Provider: provider, Version: "1.2.3",
 				Factory: func(map[string]string) (registry.Registry, error) { return nil, nil },
 			})
 			if err != nil {
@@ -36,6 +36,9 @@ func TestProviderHandshakePreservesCatalogIdentity(t *testing.T) {
 			}
 			if actual := client.Provider(); !reflect.DeepEqual(actual, expected) {
 				t.Fatalf("provider metadata changed during handshake: %+v", actual)
+			}
+			if client.SourceVersion() != "1.2.3" {
+				t.Fatalf("source version %q", client.SourceVersion())
 			}
 			metadata := client.Provider()
 			metadata.Registries[0].Kind = "changed"

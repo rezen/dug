@@ -16,6 +16,7 @@ func TestArtifactDir(t *testing.T) {
 		{registry.Reference{Registry: "wordpress", Name: "akismet", Version: "5.3"}, "wordpress/plugins/artifacts/akismet/5.3"},
 		{registry.Reference{Registry: "wordpress-themes", Name: "astra", Version: "4"}, "wordpress/themes/artifacts/astra/4"},
 		{registry.Reference{Registry: "github", Name: "cli/cli", Version: "v1/rc"}, "github/repos/artifacts/cli/cli/v1%2Frc"},
+		{registry.Reference{Registry: "oci", Name: "docker.io/library/alpine", Version: "3.20"}, "oci/images/artifacts/docker.io/library/alpine/3.20"},
 		{registry.Reference{Registry: "unlisted", Name: "x", Version: "1"}, "unlisted/packages/artifacts/x/1"},
 	} {
 		got, err := ArtifactDir(c.ref)

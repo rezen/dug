@@ -22,6 +22,9 @@ message InfoResponse {
   // Optional for older plugins. Describes the provider's catalogs; this
   // endpoint serves only the registry named above.
   Provider provider = 3;
+  // The source's own release version, such as 0.3.1. Optional; empty means
+  // unknown. Independent of protocol_version.
+  string source_version = 4;
 }
 
 message Provider {
@@ -32,6 +35,8 @@ message Provider {
 message RegistryDefinition {
   string id = 1;   // stable, globally unique artifact/storage identity
   string kind = 2; // catalog name within the provider, e.g. plugins or themes
+  // experimental, beta or stable. Optional for older plugins; empty means unknown.
+  string stability = 3;
 }
 
 message Reference {

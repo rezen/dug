@@ -38,7 +38,7 @@ func Serve(ctx context.Context, address string, opts ServerOptions) error {
 		case <-finished:
 		}
 	}()
-	slog.Info("registry plugin listening", "registry", opts.Registry, "address", listener.Addr().String(), "protocol_version", ProtocolVersion)
+	slog.Info("registry plugin listening", "registry", opts.Registry, "address", listener.Addr().String(), "protocol_version", ProtocolVersion, "version", opts.Version)
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

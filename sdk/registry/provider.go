@@ -18,9 +18,27 @@ type Provider struct {
 // Kind names the catalog within its provider, such as "plugins" or "themes".
 // Provider and Kind are declared explicitly, never inferred by splitting IDs.
 type Definition struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"`
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"`
+	Stability Stability `json:"stability,omitempty"`
 }
+
+// Stability says how far callers can rely on a catalog's adapter: its options,
+// the facts it fills, and the shape of what it enumerates.
+type Stability string
+
+const (
+	// Experimental adapters may change options, facts or coverage without notice.
+	Experimental Stability = "experimental"
+	// Beta adapters work end to end but are young or have known coverage gaps.
+	Beta Stability = "beta"
+	// Stable adapters keep their options and facts compatible between releases.
+	Stable Stability = "stable"
+)
+
+// Valid reports whether s is a declared level. Empty is not valid here; older
+// plugins that predate the field are tolerated by Provider.Validate instead.
+func (s Stability) Valid() bool { return s == Experimental || s == Beta || s == Stable }
 
 // Validate checks that every catalog has a distinct identity and kind.
 func (p Provider) Validate() error {
@@ -34,6 +52,9 @@ func (p Provider) Validate() error {
 		}
 		if ids[definition.ID] || kinds[definition.Kind] {
 			return fmt.Errorf("provider %q: duplicate registry ID or kind: %q/%q", p.ID, definition.ID, definition.Kind)
+		}
+		if definition.Stability != "" && !definition.Stability.Valid() {
+			return fmt.Errorf("provider %q: registry %q has unknown stability %q", p.ID, definition.ID, definition.Stability)
 		}
 		ids[definition.ID], kinds[definition.Kind] = true, true
 	}

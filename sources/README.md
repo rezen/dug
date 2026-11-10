@@ -6,20 +6,32 @@ host owns storage, ordering, resume, and S3 credentials. See
 [the plugin design](../docs/plugins.md) and
 [module boundaries](../docs/monorepo.md).
 
-| Source | Identity | Default listen | Version history | Notes |
-| --- | --- | --- | --- | --- |
-| [wordpress](wordpress/) | `wordpress` | `127.0.0.1:7781` | Yes, SVN tags | Plugin directory; downloads, ratings, active installs |
-| [wordpress-themes](wordpress/) | `wordpress-themes` | `127.0.0.1:7785` | Yes, SVN version directories | Theme directory served by the wordpress module; adds parent theme |
-| [chrome](chrome/) | `chrome` | `127.0.0.1:7782` | No | Public sitemap discovery; CRX pinned with SHA-256; store page gives users, rating count, category, developer |
-| [firefox](firefox/) | `firefox` | `127.0.0.1:7783` | Yes, AMO versions | Weekly downloads, daily users, ratings |
-| [github](github/) | `github` | `127.0.0.1:7784` | Yes, releases and tags | Release assets, default-branch snapshots, stars; `GITHUB_TOKEN` for quota and private repos |
-| [n8n](n8n/) | `n8n` | `127.0.0.1:7786` | Yes, npm versions | Community nodes (npm keyword `n8n-community-node-package`); monthly downloads; tarballs verified against npm's SHA-512; enumeration is a union of two indexes and can leave a gap |
-| [ansible-galaxy](ansible-galaxy/) | `ansible-galaxy` | `127.0.0.1:7787` | Yes, collection versions | Published collections only; lifetime downloads, tags, declared repository; SHA-256 and size pinned per version |
-| [obsidian](obsidian/) | `obsidian` | `127.0.0.1:7788` | Yes, GitHub releases | Community plugins; lifetime and per-version downloads from the catalog stats; main.js, manifest.json and styles.css per release, with GitHub's SHA-256 where it publishes one; needs `GITHUB_TOKEN` (about 10,000 plugins) |
-| [helm](helm/) | `helm` | `127.0.0.1:7789` | Yes, Artifact Hub versions | Charts from Artifact Hub's helm repositories; per-repo download host rule; SHA-256 pinned per version, no size; stars; OCI-hosted charts skipped |
-| [joomla](joomla/) | `joomla` | `127.0.0.1:7790` | Yes, update-manifest releases | Install from Web extensions whose install URL is an HTTPS update manifest (about 90 of 3,900); every release pinned with the manifest's SHA-256, SHA-384 or SHA-512; ratings, license; per-manifest download host rule |
+| Source | Identity | Stability | Default listen | Version history | Notes |
+| --- | --- | --- | --- | --- | --- |
+| [wordpress](wordpress/) | `wordpress` | stable | `127.0.0.1:7781` | Yes, SVN tags | Plugin directory; downloads, ratings, active installs |
+| [wordpress-themes](wordpress/) | `wordpress-themes` | stable | `127.0.0.1:7785` | Yes, SVN version directories | Theme directory served by the wordpress module; adds parent theme |
+| [chrome](chrome/) | `chrome` | stable | `127.0.0.1:7782` | No | Public sitemap discovery; CRX pinned with SHA-256; store page gives users, rating count, category, developer |
+| [firefox](firefox/) | `firefox` | stable | `127.0.0.1:7783` | Yes, AMO versions | Weekly downloads, daily users, ratings |
+| [github](github/) | `github` | stable | `127.0.0.1:7784` | Yes, releases and tags | Release assets, default-branch snapshots, stars; `GITHUB_TOKEN` for quota and private repos |
+| [n8n](n8n/) | `n8n` | beta | `127.0.0.1:7786` | Yes, npm versions | Community nodes (npm keyword `n8n-community-node-package`); monthly downloads; tarballs verified against npm's SHA-512; enumeration is a union of two indexes and can leave a gap |
+| [ansible-galaxy](ansible-galaxy/) | `ansible-galaxy` | beta | `127.0.0.1:7787` | Yes, collection versions | Published collections only; lifetime downloads, tags, declared repository; SHA-256 and size pinned per version |
+| [obsidian](obsidian/) | `obsidian` | beta | `127.0.0.1:7788` | Yes, GitHub releases | Community plugins; lifetime and per-version downloads from the catalog stats; main.js, manifest.json and styles.css per release, with GitHub's SHA-256 where it publishes one; needs `GITHUB_TOKEN` (about 10,000 plugins) |
+| [helm](helm/) | `helm` | beta | `127.0.0.1:7789` | Yes, Artifact Hub versions | Charts from Artifact Hub's helm repositories; per-repo download host rule; SHA-256 pinned per version, no size; stars; OCI-hosted charts skipped |
+| [joomla](joomla/) | `joomla` | beta | `127.0.0.1:7790` | Yes, update-manifest releases | Install from Web extensions whose install URL is an HTTPS update manifest (about 90 of 3,900); every release pinned with the manifest's SHA-256, SHA-384 or SHA-512; ratings, license; per-manifest download host rule |
+| [oci](oci/) | `oci` | experimental | `127.0.0.1:7791` | Yes, tags | Docker Hub and Quay enumerated through their catalog APIs, GHCR and ECR Public by `repos`; tag pinned to its manifest digest; manifest, config and layers per selected platform; client in `sdk/services/oci` |
 
 Run one locally with `just plugin <name> --listen 127.0.0.1:PORT`.
+
+Each source also has a `live_test.go` (build tag `live`) that runs it against the
+real provider for one small, stable slice of the catalog and asserts the
+contract: discovery emits references, the facts, tags and author we map are
+still populated, `Resolve` returns a revision and blobs, and the first blob
+downloads and matches its declared size and digest. Run them with `just live`
+or `just live sources/firefox`; `.github/workflows/live.yml` runs them daily,
+one job per source, so a red job means the provider changed. Timeouts, 429 and
+5xx skip rather than fail. `LIVETEST_DUMP=1` logs the first reference and its
+blobs, which is the quickest way to see what changed. obsidian needs
+`GITHUB_TOKEN`; the others work without it.
 
 ## What a source must provide
 
@@ -38,6 +50,19 @@ Run one locally with `just plugin <name> --listen 127.0.0.1:PORT`.
   specific metrics go in string metadata. Missing facts sort last.
 - **Options** that are rejected when unknown, carry no credentials, and are
   safe to persist in an inventory. Credentials stay in the plugin process.
+- **Stability** declared in code: each `registry.Definition` in the source's
+  `Provider()` sets `Stability` to `registry.Experimental`, `registry.Beta` or
+  `registry.Stable`, and `dug-NAME` refuses to start without one. Experimental
+  means options, facts and coverage may change without notice; beta works end
+  to end but is young or has known gaps; stable keeps options and facts
+  compatible between releases. The level is sent in the handshake, shown as
+  `stability` in `--format jsonl` output, and `dug` warns for experimental
+  sources.
+- **Release version** per source, tagged `sources/NAME/vX.Y.Z` (the wordpress
+  module covers both catalogs). `scripts/build.sh` stamps it into `dug-NAME`
+  from `git describe`; untagged builds report `devel`. `dug-NAME --version`
+  prints it, the handshake carries it as `source_version`, and `dug` logs it
+  when it connects. It is separate from the wire `ProtocolVersion`.
 - **Version history** where the registry exposes it, so `--version-depth` can
   collect the releases around a suspicious change.
 
@@ -65,12 +90,20 @@ API facts below were checked on 2026-11-06.
   Covered by the [github](github/) source: `repos` or `owner` selection,
   `tags=true` or `refs=v4` pinned to commit SHAs, release assets, and
   quota-free archives from `codeload.github.com` for public repositories.
-- [ ] **OCI registries** (Docker Hub, GHCR, Quay, ECR Public). One source over
-  the distribution API. Artifact blobs are the manifest, config, and layers;
-  revision is the manifest digest. Discovery differs per registry: Docker Hub
-  lists repositories per namespace and has search, Quay has an API, GHCR has
-  no catalog and needs a seed list from the GitHub packages API. Needs options
-  for platform selection on multi-arch indexes and a maximum layer size.
+- [x] **OCI registries** (Docker Hub, GHCR, Quay, ECR Public). Built as
+  `sources/oci` over the shared client in `sdk/services/oci` (checked
+  2026-11-10). Blobs are the index, the selected image manifests, configs and
+  layers; revision is the pinned manifest or index digest. Options select the
+  platform (`linux/amd64` by default, or `all` with attestations) and cap layer
+  size. Different from the note above: Docker Hub cannot list every namespace
+  (only `library` is a catalog; `search` is windowed and was left out), Quay
+  does list every public repository without a namespace, GHCR and ECR deny
+  `/v2/_catalog` even with a token, so both take `repos`, and their tag lists
+  are lexical, so recency comes from each image's creation time. Docker Hub
+  allows 100 anonymous manifest pulls per hour per IP. Cosign signature
+  indexes (`sha256-<digest>` tags) have no platform and are archived whole.
+  Not built: GitHub-packages or ECR gallery seeding, the referrers API, and
+  Helm's `oci://` charts (Helm still skips them; the client is ready for it).
 - [ ] **npm**. Install scripts make it the primary malware registry. The legacy
   replication feed was replaced in May 2025 and no longer inlines documents, so
   discover via the changes feed plus per-package registry documents, or via an

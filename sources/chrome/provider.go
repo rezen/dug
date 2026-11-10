@@ -6,6 +6,6 @@ import "github.com/rezen/dug/sdk/registry"
 func Provider() registry.Provider {
 	return registry.Provider{
 		ID:         "chrome",
-		Registries: []registry.Definition{{ID: "chrome", Kind: "extensions"}},
+		Registries: []registry.Definition{{ID: "chrome", Kind: "extensions", Stability: registry.Stable}},
 	}
 }

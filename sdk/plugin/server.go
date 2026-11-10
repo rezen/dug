@@ -25,6 +25,8 @@ type ServerOptions struct {
 	// Optional provider metadata. When present it must declare Registry.
 	Provider registry.Provider
 	Factory  Factory
+	// Optional release version of the source, reported during the handshake.
+	Version string
 	// Optional shared bearer token. Terminate TLS before exposing a remote server.
 	Token string
 }
@@ -36,7 +38,7 @@ func NewHandler(opts ServerOptions) (http.Handler, error) {
 	if err := validateProvider(opts.Provider, opts.Registry); err != nil {
 		return nil, err
 	}
-	path, handler := registryv1connect.NewRegistryServiceHandler(&server{id: opts.Registry, provider: opts.Provider.Clone(), factory: opts.Factory}, connect.WithReadMaxBytes(maxMessageBytes), connect.WithSendMaxBytes(maxMessageBytes))
+	path, handler := registryv1connect.NewRegistryServiceHandler(&server{id: opts.Registry, version: opts.Version, provider: opts.Provider.Clone(), factory: opts.Factory}, connect.WithReadMaxBytes(maxMessageBytes), connect.WithSendMaxBytes(maxMessageBytes))
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	if opts.Token == "" {
@@ -53,6 +55,7 @@ func NewHandler(opts ServerOptions) (http.Handler, error) {
 
 type server struct {
 	id       string
+	version  string
 	provider registry.Provider
 	factory  Factory
 }
@@ -60,7 +63,7 @@ type server struct {
 var _ registryv1connect.RegistryServiceHandler = (*server)(nil)
 
 func (s *server) Info(ctx context.Context, req *connect.Request[registryv1.InfoRequest]) (*connect.Response[registryv1.InfoResponse], error) {
-	return connect.NewResponse(&registryv1.InfoResponse{Registry: s.id, ProtocolVersion: ProtocolVersion, Provider: providerToWire(s.provider)}), nil
+	return connect.NewResponse(&registryv1.InfoResponse{Registry: s.id, ProtocolVersion: ProtocolVersion, Provider: providerToWire(s.provider), SourceVersion: s.version}), nil
 }
 
 func (s *server) source(options map[string]string) (registry.Registry, error) {

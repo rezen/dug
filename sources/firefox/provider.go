@@ -6,6 +6,6 @@ import "github.com/rezen/dug/sdk/registry"
 func Provider() registry.Provider {
 	return registry.Provider{
 		ID:         "firefox",
-		Registries: []registry.Definition{{ID: "firefox", Kind: "addons"}},
+		Registries: []registry.Definition{{ID: "firefox", Kind: "addons", Stability: registry.Stable}},
 	}
 }

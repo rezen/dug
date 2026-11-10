@@ -29,6 +29,7 @@ type Client struct {
 	rpc      registryv1connect.RegistryServiceClient
 	opts     ClientOptions
 	provider registry.Provider
+	version  string
 }
 
 var _ registry.Registry = (*Client)(nil)
@@ -63,6 +64,7 @@ func NewClient(ctx context.Context, httpClient *http.Client, endpoint string, op
 		return nil, fmt.Errorf("incompatible plugin: registry=%q protocol=%d (expected %q/%d)", info.Msg.Registry, info.Msg.ProtocolVersion, opts.Registry, ProtocolVersion)
 	}
 	client.provider = providerFromWire(info.Msg.Provider)
+	client.version = info.Msg.SourceVersion
 	if info.Msg.Provider != nil {
 		if err := client.provider.Validate(); err != nil {
 			return nil, fmt.Errorf("plugin provider: %w", err)
@@ -73,6 +75,10 @@ func NewClient(ctx context.Context, httpClient *http.Client, endpoint string, op
 	}
 	return client, nil
 }
+
+// SourceVersion returns the plugin's release version from the handshake, or ""
+// when the plugin predates the field or was built without one.
+func (c *Client) SourceVersion() string { return c.version }
 
 // Provider returns the ecosystem and catalogs advertised during the handshake.
 // Older plugins may omit this metadata, in which case the result is zero-valued.

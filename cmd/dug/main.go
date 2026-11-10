@@ -144,6 +144,14 @@ queued and delivered in batches by background subscribers, so they never slow th
 If a subscriber falls more than --events-buffer events behind, events are dropped
 and counted in a final warning; S3 remains the durable record.
 
+OCI registries: dug-oci (use --plugin-url http://127.0.0.1:7791)
+  --option repos=docker.io/alpine,quay.io/coreos/etcd,ghcr.io/jqlang/jq
+  --option namespaces=docker.io/library,quay.io/coreos
+  --option registries=docker.io,quay.io
+  --option platform=linux/arm64
+  --option platform=all
+  --option max_layer_size=104857600
+
 Run a command with --help for transfer and storage options.
 `
 
@@ -368,6 +376,12 @@ func executeWithStore(ctx context.Context, args []string, stdout, stderr io.Writ
 		}
 		provider := remote.Provider()
 		definition, _ := provider.Registry(kind)
+		if !*quiet {
+			logger.Info("source connected", "registry", kind, "version", remote.SourceVersion(), "stability", definition.Stability)
+		}
+		if definition.Stability == registry.Experimental {
+			logger.Warn("source is experimental; options, facts and coverage may change", "registry", kind)
+		}
 		output := &listOutput{format: listFormat, stdout: stdout, stderr: stderr, provider: provider}
 		stopListing := func() {}
 		if command == "list" {

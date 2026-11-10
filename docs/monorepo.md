@@ -17,6 +17,7 @@ to separate repositories. The host has no compile-time adapter dependency.
 | `sources/obsidian/` | Obsidian adapter, tests, `cmd/dug-obsidian` | SDK |
 | `sources/helm/` | Helm charts adapter, tests, `cmd/dug-helm` | SDK |
 | `sources/joomla/` | Joomla adapter, tests, `cmd/dug-joomla` | SDK |
+| `sources/oci/` | OCI registries adapter, tests, `cmd/dug-oci` | SDK |
 | `integration/` | Tests combining host, SDK and adapters; the GoFakeS3 test server `cmd/dug-s3local` | Host, SDK, sources under test, GoFakeS3 |
 
 ```mermaid
@@ -31,6 +32,7 @@ flowchart LR
     Obsidian[Obsidian module] --> SDK
     Helmcharts[Helm charts module] --> SDK
     Joomla[Joomla module] --> SDK
+    OCIregistries[OCI registries module] --> SDK
     Host <-. Connect protocol .-> WP
     Host <-. Connect protocol .-> Chrome
     Host <-. Connect protocol .-> Firefox
@@ -40,6 +42,7 @@ flowchart LR
     Host <-. Connect protocol .-> Obsidian
     Host <-. Connect protocol .-> Helmcharts
     Host <-. Connect protocol .-> Joomla
+    Host <-. Connect protocol .-> OCIregistries
 ```
 
 Each source has its own `go.mod`, `go.sum`, executable and adapter tests. It must
@@ -68,6 +71,7 @@ has a stable global `ID` and a provider-local `Kind`:
 | `n8n` | `packages` | `n8n` |
 | `ansible-galaxy` | `collections` | `ansible-galaxy` |
 | `helm` | `packages` | `helm` |
+| `oci` | `images` | `oci` |
 
 Both WordPress commands use `wordpress.Provider()`, derived from the adapter's
 directory definitions. The command validates membership before startup. Each
@@ -111,10 +115,17 @@ package and per-version documents with SHA-256 digests, and name and version rul
 Artifact Hub indexes repositories and hosts no bytes, so content URLs point at
 arbitrary hosts and each source decides which it accepts.
 
+`sdk/services/oci` is the shared client for OCI distribution registries: the
+bearer token exchange (realms pinned to the registry's own hosts), tag lists,
+manifest and index fetching with digest verification, blob streaming with a
+redirect policy that allows CDNs but not internal addresses, and the Docker Hub
+and Quay catalog APIs. The OCI source uses it; Helm's `oci://` charts and a
+Homebrew bottle source can reuse it instead of growing their own.
+
 ## Local development
 
 ```sh
-just build       # all eleven executables in bin/
+just build       # all fourteen executables in bin/
 just check       # race tests + vet for every module, boundary checks
 just test sources/firefox
 just plugin firefox
@@ -141,7 +152,7 @@ replacements or pretending the SDK has already been published.
 
 While these modules share a repository, Go submodule tags include their directory:
 `sdk/v0.1.0`, `sources/wordpress/v0.1.0`, `sources/chrome/v0.1.0`,
-`sources/firefox/v0.1.0`, `sources/github/v0.1.0`, `sources/n8n/v0.1.0`, `sources/ansible-galaxy/v0.1.0`, `sources/obsidian/v0.1.0`, and `sources/helm/v0.1.0`. A root host release uses `v0.1.0`. These are naming
+`sources/firefox/v0.1.0`, `sources/github/v0.1.0`, `sources/n8n/v0.1.0`, `sources/ansible-galaxy/v0.1.0`, `sources/obsidian/v0.1.0`, `sources/helm/v0.1.0`, and `sources/oci/v0.1.0`. A root host release uses `v0.1.0`. These are naming
 examples, not tags that this task created.
 
 1. Publish an SDK version, then pin each host/source dependency to that version.

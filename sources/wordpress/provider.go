@@ -9,7 +9,7 @@ func Provider() registry.Provider {
 	provider := registry.Provider{ID: "wordpress"}
 	for _, kind := range []Kind{Plugins, Themes} {
 		provider.Registries = append(provider.Registries, registry.Definition{
-			ID: kind.Registry(), Kind: string(kind),
+			ID: kind.Registry(), Kind: string(kind), Stability: registry.Stable,
 		})
 	}
 	return provider

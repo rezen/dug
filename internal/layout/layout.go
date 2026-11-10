@@ -24,6 +24,7 @@ var types = map[string]string{
 	"helm":             "charts",
 	"n8n":              "nodes",
 	"obsidian":         "plugins",
+	"oci":              "images",
 	"wordpress":        "plugins",
 	"wordpress-themes": "themes",
 }

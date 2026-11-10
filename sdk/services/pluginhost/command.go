@@ -12,12 +12,36 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"strings"
 	"syscall"
 
 	"github.com/rezen/dug/sdk/plugin"
 	"github.com/rezen/dug/sdk/registry"
 	"github.com/rezen/dug/sdk/services"
 )
+
+// version is the source's release version, stamped at build time with
+//
+//	-ldflags "-X github.com/rezen/dug/sdk/services/pluginhost.version=1.2.3"
+//
+// scripts/build.sh derives it from the module's sources/NAME/vX.Y.Z git tag.
+var version string
+
+// stdout receives --version output; tests replace it.
+var stdout io.Writer = os.Stdout
+
+// Version reports the stamped release version, falling back to the module
+// version recorded by `go install`, and to "devel" for untagged local builds.
+func Version() string {
+	if version != "" {
+		return strings.TrimPrefix(version, "v")
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return strings.TrimPrefix(info.Main.Version, "v")
+	}
+	return "devel"
+}
 
 // Command describes a source executable. Provider must declare Registry.
 // ConfigureFlags and Validate are optional
@@ -62,11 +86,16 @@ func (command Command) run(ctx context.Context, args []string, stderr io.Writer,
 	if err := command.Provider.Validate(); err != nil {
 		return err
 	}
-	if _, ok := command.Provider.Registry(command.Registry); !ok {
+	definition, ok := command.Provider.Registry(command.Registry)
+	if !ok {
 		return fmt.Errorf("registry %q is not declared by provider %q", command.Registry, command.Provider.ID)
+	}
+	if !definition.Stability.Valid() {
+		return fmt.Errorf("registry %q must declare its stability (experimental, beta or stable)", command.Registry)
 	}
 	flags := flag.NewFlagSet("dug-"+command.Registry, flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	showVersion := flags.Bool("version", false, "Print the source version and exit")
 	address := flags.String("listen", command.DefaultAddress, "Connect plugin listen address")
 	connections := flags.Int("connections", 128, "Maximum upstream HTTP connections per host")
 	cacheTTL := flags.Duration("cache-ttl", services.CacheTTLFromEnv(), "Upstream GET cache lifetime, 0 disables (or "+services.EnvCacheTTL+")")
@@ -78,6 +107,10 @@ func (command Command) run(ctx context.Context, args []string, stderr io.Writer,
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
+		return err
+	}
+	if *showVersion {
+		_, err := fmt.Fprintf(stdout, "dug-%s %s (%s)\n", command.Registry, Version(), definition.Stability)
 		return err
 	}
 	if *connections < 1 || flags.NArg() != 0 {
@@ -99,6 +132,7 @@ func (command Command) run(ctx context.Context, args []string, stderr io.Writer,
 	return serve(ctx, *address, plugin.ServerOptions{
 		Registry: command.Registry,
 		Provider: command.Provider,
+		Version:  Version(),
 		Factory:  command.Factory(client),
 		Token:    os.Getenv("DUG_PLUGIN_TOKEN"),
 	})

@@ -2,7 +2,7 @@
 
 Registry implementations run as independent HTTP services using
 [Connect-Go](https://github.com/connectrpc/connect-go). WordPress plugins and themes, Chrome Web Store,
-Firefox, GitHub, n8n community nodes, Ansible Galaxy, Obsidian community plugins, and Helm charts are shipped here as independent Go modules. See [workspace boundaries](monorepo.md). The host accepts other implementations of the same protocol
+Firefox, GitHub, n8n community nodes, Ansible Galaxy, Obsidian community plugins, Helm charts, and OCI registries (Docker Hub, Quay, GHCR, ECR Public) are shipped here as independent Go modules. See [workspace boundaries](monorepo.md). The host accepts other implementations of the same protocol
 without importing their code or adding registry-specific flags.
 
 ```mermaid
@@ -144,6 +144,28 @@ Discovery pins the artifact URL, SHA-256 and size from each version's own
 document, so resolution makes no request and rejects any URL that is not the
 `artifacts/NAMESPACE-NAME-VERSION.tar.gz` route on the Galaxy host.
 
+OCI registries accept:
+
+| Option | Meaning |
+| --- | --- |
+| `repos` | Comma-separated `HOST/REPOSITORY`, such as `docker.io/alpine` or `ghcr.io/jqlang/jq` |
+| `namespaces` | Comma-separated `HOST/NAMESPACE`; every public repository in each (Docker Hub, Quay) |
+| `registries` | Registries walked when no selector is given (Docker Hub, Quay); default `docker.io,quay.io` |
+| `platform` | `os/arch[/variant]` or `all`; default `linux/amd64` |
+| `max_layer_size` | Omit layers above this many bytes; default no limit |
+| `max_tags` | Registries without a catalog: fail above this many tags per repository; default 1000 |
+| `version_depth` | Positive integer, inclusive YYYY-MM-DD cutoff, or unlimited; default 1 |
+
+`registries` cannot be combined with `repos` or `namespaces`. A reference is one tag,
+pinned at listing time to the manifest or index digest it pointed at; resolution
+fetches that digest, verifies the bytes, selects the platform and lists the index,
+image manifests, configs and layers as blobs. No download URL is persisted: requests
+are built from the validated registry, repository and digest, token realms must be
+the registry's own hosts, and blob redirects must stay on HTTPS to public DNS names.
+Registry logins come from `DOCKER_HUB_USERNAME`/`DOCKER_HUB_TOKEN`, `QUAY_USERNAME`/
+`QUAY_TOKEN` and `GHCR_USERNAME`/`GHCR_TOKEN` in the plugin's environment, never from
+options. The client lives in `sdk/services/oci`.
+
 Helm charts accept:
 
 | Option | Meaning |
@@ -264,7 +286,7 @@ share the SDK but do not import each other.
 
 WordPress plugins bind to `127.0.0.1:7781`, Chrome to `127.0.0.1:7782`, Firefox to `127.0.0.1:7783`, GitHub to
 `127.0.0.1:7784`, WordPress themes to `127.0.0.1:7785`, n8n to `127.0.0.1:7786`, Ansible Galaxy to
-`127.0.0.1:7787`, Obsidian to `127.0.0.1:7788`, and Helm to `127.0.0.1:7789` by default. Set the same
+`127.0.0.1:7787`, Obsidian to `127.0.0.1:7788`, Helm to `127.0.0.1:7789`, and OCI registries to `127.0.0.1:7791` by default. Set the same
 `DUG_PLUGIN_TOKEN` on the host and plugin to enable bearer authentication; the host only sends it to
 `https://` or loopback plugin URLs. For a remote deployment, terminate TLS at a proxy and allow long-lived streaming
 responses without response buffering. The supplied server uses HTTP/1.1 Connect;
@@ -401,6 +423,12 @@ version), `UpdatedAt`, `ReleasedAt` (the version's upload time) and a declared
 collection's galaxy.yml tags and the author is the namespace. Metadata keeps
 `deprecated`, `requires_ansible`, `license` and `marks`. Galaxy publishes no
 ratings or install base, so those stay absent.
+
+OCI references carry the registry's own digests. Docker Hub supplies `Downloads.Total`
+(repository pulls, repeated on every tag), `UpdatedAt`, `ReleasedAt` (the tag's last push)
+and metadata `stars`; Quay supplies `ReleasedAt` from the tag's start time; GHCR and ECR
+supply `ReleasedAt` from the image's creation time. Metadata keeps `version_rank` and
+`release_date_source`. Unpublished facts stay nil.
 
 Helm charts supply SHA-256 but no size. Their facts are `UpdatedAt` (the current
 version's publish time, repeated on every version), `ReleasedAt` (the version's

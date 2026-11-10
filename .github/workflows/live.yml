@@ -1,0 +1,25 @@
+name: Live provider contracts
+# Runs each source against its real upstream so provider-side changes surface
+# as a failing job named after the source. Not part of the push/PR checks.
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [ansible-galaxy, chrome, firefox, github, helm, joomla, n8n, obsidian, wordpress]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.work
+          cache-dependency-path: '**/go.sum'
+      - run: sh scripts/live.sh sources/${{ matrix.source }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

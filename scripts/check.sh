@@ -10,7 +10,7 @@ esac
 if [ -n "${2:-}" ]; then
   set -- "$2"
 else
-  set -- . sdk sources/wordpress sources/chrome sources/firefox sources/github sources/n8n sources/ansible-galaxy sources/obsidian sources/helm sources/joomla integration
+  set -- . sdk sources/wordpress sources/chrome sources/firefox sources/github sources/n8n sources/ansible-galaxy sources/obsidian sources/helm sources/joomla sources/oci integration
 fi
 for module do
   case "$mode" in
