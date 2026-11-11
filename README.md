@@ -26,7 +26,7 @@ plugin process, so the host knows nothing about any particular registry.
 
 ## Quick start
 
-Requires Go 1.26+, [just](https://github.com/casey/just), and Docker (for the
+Requires Go 1.27+, [just](https://github.com/casey/just), and Docker (for the
 local S3 used below). Each command starts the registry plugin and a local rclone S3 server
 bucket for you, then stops the plugin when it finishes.
 

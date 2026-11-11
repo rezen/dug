@@ -1,8 +1,8 @@
 module github.com/rezen/dug/sources/obsidian
 
-go 1.26.0
+go 1.27.0
 
-toolchain go1.26.8
+toolchain go1.27.4
 
 require github.com/rezen/dug/sdk v0.0.0
 
