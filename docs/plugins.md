@@ -2,7 +2,7 @@
 
 Registry implementations run as independent HTTP services using
 [Connect-Go](https://github.com/connectrpc/connect-go). WordPress plugins and themes, Chrome Web Store,
-Firefox, GitHub, n8n community nodes, Ansible Galaxy, Obsidian community plugins, Helm charts, Jenkins plugins, and OCI registries (Docker Hub, Quay, GHCR, ECR Public) are shipped here as independent Go modules. See [workspace boundaries](monorepo.md). The host accepts other implementations of the same protocol
+Firefox, GitHub, n8n community nodes, Ansible Galaxy, Obsidian community plugins, Helm charts, Jenkins plugins, Bitbucket Cloud repositories, and OCI registries (Docker Hub, Quay, GHCR, ECR Public) are shipped here as independent Go modules. See [workspace boundaries](monorepo.md). The host accepts other implementations of the same protocol
 without importing their code or adding registry-specific flags.
 
 ```mermaid
@@ -142,6 +142,23 @@ publishes it base64-encoded; the plugin stores `sha256:<hex>`), and the size for
 each plugin's current release only. Both update center documents are signature
 verified before use (see the module README). Resolution makes no request and rejects any URL
 that is not a `.hpi` under `/download/plugins/NAME/` on `updates.jenkins.io`.
+
+Bitbucket Cloud accepts:
+
+| Option | Meaning |
+| --- | --- |
+| `workspaces` | Comma-separated workspace slugs (the tenants); every git repository the workspace lists is archived |
+| `repos` | Comma-separated `workspace/slug` repositories; a missing one is an error |
+| `forks` | Include forked repositories when walking a workspace; default `false` |
+| `snapshot` | `fallback` (default: main-branch head only for repositories with no tags), `always`, `only`, or `never` |
+| `version_depth` | Positive integer, inclusive YYYY-MM-DD cutoff, or unlimited; default 1. Bounds tags, newest commit first |
+
+At least one of `workspaces` or `repos` is required: Bitbucket's global repository
+listing is not available, so the public catalog cannot be walked. `BITBUCKET_TOKEN`
+(a repository, project or workspace access token) is read by the plugin process only.
+Discovery pins the tagged commit and resolution derives
+`bitbucket.org/WORKSPACE/SLUG/get/COMMIT.tar.gz` from it, so no URL is persisted.
+Bitbucket publishes no digest or size; the host hashes the archive.
 
 Ansible Galaxy accepts:
 
@@ -300,7 +317,7 @@ share the SDK but do not import each other.
 
 WordPress plugins bind to `127.0.0.1:7781`, Chrome to `127.0.0.1:7782`, Firefox to `127.0.0.1:7783`, GitHub to
 `127.0.0.1:7784`, WordPress themes to `127.0.0.1:7785`, n8n to `127.0.0.1:7786`, Ansible Galaxy to
-`127.0.0.1:7787`, Obsidian to `127.0.0.1:7788`, Helm to `127.0.0.1:7789`, Jenkins to `127.0.0.1:7792`, and OCI registries to `127.0.0.1:7791` by default. Set the same
+`127.0.0.1:7787`, Obsidian to `127.0.0.1:7788`, Helm to `127.0.0.1:7789`, Jenkins to `127.0.0.1:7792`, Bitbucket to `127.0.0.1:7793`, and OCI registries to `127.0.0.1:7791` by default. Set the same
 `DUG_PLUGIN_TOKEN` on the host and plugin to enable bearer authentication; the host only sends it to
 `https://` or loopback plugin URLs. For a remote deployment, terminate TLS at a proxy and allow long-lived streaming
 responses without response buffering. The supplied server uses HTTP/1.1 Connect;
@@ -428,6 +445,14 @@ published that version (username and email). Metadata keeps `version_rank`,
 `release_date_source`, `license`, and, only when true, `install_script` (a
 preinstall, install or postinstall script), `deprecated` and `provenance` (a build
 attestation). npm publishes no ratings or install base.
+
+Bitbucket accepts `workspaces`, `repos`, `forks`, `snapshot` and `version_depth`. It
+supplies no digest, size, download count or install base. Its facts are `UpdatedAt`
+(the repository's last update, repeated on every version), `ReleasedAt` (the commit
+date the tag or branch head points at) and a `Repository` at `bitbucket.org` with the
+archived commit and source `registry`. The author is the workspace. Metadata keeps
+`kind` (`tag` or `snapshot`), `language`, `repo_size` (bytes), `private`, `fork`,
+`default_branch`, `created_at`, `repo_uuid`, `version_rank` and `release_date_source`.
 
 Jenkins accepts `plugins` and `version_depth`. It supplies SHA-256 for every version
 and size for current releases. Its facts are `Installs` (the install count Jenkins

@@ -18,6 +18,7 @@ const ManifestName = "manifest.json"
 // when adding a source; unlisted registries use defaultType.
 var types = map[string]string{
 	"ansible-galaxy":   "collections",
+	"bitbucket":        "repos",
 	"chrome":           "extensions",
 	"firefox":          "addons",
 	"github":           "repos",

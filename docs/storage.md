@@ -4,7 +4,7 @@ Everything for one kind of artifact lives under `<registry>/<type>/`. The type
 comes from the registry identity (`internal/layout`): `wordpress` is
 `wordpress/plugins`, `wordpress-themes` is `wordpress/themes`, `chrome` is
 `chrome/extensions`, `firefox` is `firefox/addons`, `github` is `github/repos`,
-`ansible-galaxy` is `ansible-galaxy/collections`, `helm` is `helm/charts`, `jenkins` is `jenkins/plugins`, `n8n` is
+`ansible-galaxy` is `ansible-galaxy/collections`, `helm` is `helm/charts`, `jenkins` is `jenkins/plugins`, `bitbucket` is `bitbucket/repos`, `n8n` is
 `n8n/nodes`, `obsidian` is `obsidian/plugins`, `oci` is `oci/images`. A registry not listed there uses
 `packages`; add new sources to that map.
 

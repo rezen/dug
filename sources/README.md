@@ -20,6 +20,7 @@ host owns storage, ordering, resume, and S3 credentials. See
 | [joomla](joomla/) | `joomla` | beta | `127.0.0.1:7790` | Yes, update-manifest releases | Install from Web extensions whose install URL is an HTTPS update manifest (about 90 of 3,900); every release pinned with the manifest's SHA-256, SHA-384 or SHA-512; ratings, license; per-manifest download host rule |
 | [oci](oci/) | `oci` | experimental | `127.0.0.1:7791` | Yes, tags | Docker Hub and Quay enumerated through their catalog APIs, GHCR and ECR Public by `repos`; tag pinned to its manifest digest; manifest, config and layers per selected platform; client in `sdk/services/oci` |
 | [jenkins](jenkins/) | `jenkins` | beta | `127.0.0.1:7792` | Yes, update center versions | Update center plugins (`.hpi`); two static documents walk the whole catalog; SHA-256 pinned per version, size for current releases only; installs, health score, declared repository |
+| [bitbucket](bitbucket/) | `bitbucket` | experimental | `127.0.0.1:7793` | Yes, tags | Cloud repositories of named workspaces or `repos`; tag commits and main-branch snapshots pinned to commit SHAs; no digest or size published; `BITBUCKET_TOKEN` for private repositories and quota |
 
 Run one locally with `just plugin <name> --listen 127.0.0.1:PORT`.
 
@@ -296,6 +297,12 @@ API facts below were checked on 2026-11-06.
 - **Google Play, App Store, Safari, Figma, Atlassian Cloud, Shopify,
   Salesforce**. No public artifact downloads.
 - **CurseForge**. Requires an API key and restrictive terms.
+- **Bitbucket Cloud public catalog**. Checked 2026-11-11: `GET /2.0/repositories`
+  without a workspace returns 404 anonymously, so there is no public walk. The
+  `bitbucket` source takes `workspaces` or `repos` instead. Anonymous API access
+  is 60 requests per hour per IP, authenticated 1,000 to 10,000 per hour, archives
+  5,000 per hour. Not built: the Downloads tab (uploaded files, served from a second
+  host), Mercurial repositories, and Bitbucket Data Center.
 - **Packagist, winget, Raycast, Sublime Package Control, HACS**. The
   registry only indexes; artifacts live in GitHub releases or tags.
   A generic GitHub tags-and-releases source, which the GitHub Actions work would

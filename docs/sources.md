@@ -273,6 +273,30 @@ and `security_warnings` (the IDs of Jenkins security advisories that match the
 version; absent when none match, and filterable as `metadata:security_warnings`); it publishes
 no download counts or ratings. See the [Jenkins module](../sources/jenkins/README.md).
 
+## Bitbucket Cloud repositories
+
+```sh
+BITBUCKET_TOKEN=... ./bin/dug-bitbucket --listen 127.0.0.1:7793
+
+# In another terminal with the host S3 environment configured:
+./bin/dug sync bitbucket --plugin-url http://127.0.0.1:7793 \
+  --option workspaces=atlassian --version-depth 3
+
+./bin/dug list bitbucket --plugin-url http://127.0.0.1:7793 \
+  --option repos=atlassian/aui --option snapshot=always
+```
+
+The `bitbucket` plugin archives repositories from the workspaces (tenants) you name,
+or the repositories you list. Bitbucket Cloud has no public catalog to walk, so a
+selector is required. A workspace walk lists repositories oldest first, skips forks
+unless `forks=true`, and emits each repository's tags newest commit first as
+versions; a repository with no tags gets a snapshot of its main branch. Every
+reference pins the commit, so a moved tag shows up as a new artifact on the next
+inventory. Archives are `.tar.gz` files from `bitbucket.org`; Bitbucket publishes no
+digest, so the host computes it. Set `BITBUCKET_TOKEN` for private repositories and
+for quota: anonymous requests are limited to 60 per hour per IP. See the
+[Bitbucket module](../sources/bitbucket/README.md).
+
 ## n8n community nodes
 
 ```sh

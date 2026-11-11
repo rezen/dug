@@ -27,7 +27,7 @@ Implement `storage.ReadableStore` (`Stat`, `Put`, `Open`) to add another object 
 `sdk/registry/`, `sdk/plugin/`, `engine/`, `sources/`, `sdk/services/`, and `services/storage/`; the host CLI
 lives in `cmd/dug/`. Each source owns its executable under `sources/NAME/cmd/dug-NAME/`.
 
-`wordpress.Source`, `chrome.Source`, `firefox.Source`, `github.Source`, `n8n.Source`, `ansiblegalaxy.Source`, `obsidian.Source`, `helm.Source`, `jenkins.Source`, and `oci.Source` have compile-time interface checks. A future adapter implements the two methods above and is served through
+`wordpress.Source`, `chrome.Source`, `firefox.Source`, `github.Source`, `n8n.Source`, `ansiblegalaxy.Source`, `obsidian.Source`, `helm.Source`, `jenkins.Source`, `bitbucket.Source`, and `oci.Source` have compile-time interface checks. A future adapter implements the two methods above and is served through
 the Connect bridge; no host, engine, or S3 changes are required. Its `Blob.Open` functions handle the registry's download protocol
 and authentication. Keep credentials out of persisted reference attributes.
 See [the executable adapter example](../sdk/registry/example_test.go) and

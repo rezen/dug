@@ -12,6 +12,7 @@ go build -o bin/dug ./cmd/dug
 go build -o bin/dug-web ./cmd/dug-web
 go build -o bin/dug-s3local ./integration/cmd/dug-s3local
 go build -o bin/dug-jenkins ./sources/jenkins/cmd/dug-jenkins
+go build -o bin/dug-bitbucket ./sources/bitbucket/cmd/dug-bitbucket
 go build -ldflags "$(stamp wordpress)" -o bin/dug-wordpress ./sources/wordpress/cmd/dug-wordpress
 go build -ldflags "$(stamp wordpress)" -o bin/dug-wordpress-themes ./sources/wordpress/cmd/dug-wordpress-themes
 go build -ldflags "$(stamp chrome)" -o bin/dug-chrome ./sources/chrome/cmd/dug-chrome

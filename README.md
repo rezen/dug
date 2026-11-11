@@ -12,7 +12,7 @@ for secret scanning and security review.
 
 Supported registries: WordPress plugins and themes, Chrome extensions, Firefox
 extensions, GitHub repositories, n8n community nodes, Ansible Galaxy collections,
-Obsidian community plugins, Helm charts, Jenkins plugins, and OCI registries (Docker Hub,
+Obsidian community plugins, Helm charts, Jenkins plugins, Bitbucket Cloud repositories, and OCI registries (Docker Hub,
 Quay, GHCR, ECR Public).
 
 ## How it works
@@ -72,6 +72,7 @@ authentication, so it listens on loopback by default.
 | `helm` | `dug-helm` | 7789 | `--option charts=argo/argo-cd` |
 | `jenkins` | `dug-jenkins` | 7792 | `--option plugins=git` |
 | `oci` | `dug-oci` | 7791 | `--option repos=docker.io/alpine` |
+| `bitbucket` | `dug-bitbucket` | 7793 | `--option workspaces=atlassian` |
 
 Settings can live in a `dug.yaml` in the working directory (or `--config PATH` /
 `DUG_CONFIG`): keys are flag names, with per-registry overrides and `options`.

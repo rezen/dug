@@ -7,6 +7,7 @@ use (
 	./integration
 	./sdk
 	./sources/ansible-galaxy
+	./sources/bitbucket
 	./sources/chrome
 	./sources/firefox
 	./sources/github
