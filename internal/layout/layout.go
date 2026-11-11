@@ -22,6 +22,7 @@ var types = map[string]string{
 	"firefox":          "addons",
 	"github":           "repos",
 	"helm":             "charts",
+	"jenkins":          "plugins",
 	"n8n":              "nodes",
 	"obsidian":         "plugins",
 	"oci":              "images",

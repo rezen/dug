@@ -236,6 +236,43 @@ collection (`downloads.total`, repeated on every version), update and release ti
 a declared source repository, tags, and a `deprecated` flag in metadata; it publishes
 no ratings or install base. See the [Ansible Galaxy module](../sources/ansible-galaxy/README.md).
 
+## Jenkins plugins
+
+```sh
+./bin/dug-jenkins --listen 127.0.0.1:7792
+
+# In another terminal with the host S3 environment configured:
+./bin/dug sync jenkins --plugin-url http://127.0.0.1:7792 \
+  --option plugins=git,workflow-cps --version-depth 3
+
+# Save the whole update center inventory; omit --limit to enumerate it all.
+./bin/dug list jenkins --plugin-url http://127.0.0.1:7792 --limit 100
+
+./bin/dug download jenkins --plugin-url http://127.0.0.1:7792 \
+  --inventory INVENTORY_KEY --order=-installs --where 'installs > 10000' --limit 100
+```
+
+The `jenkins` plugin reads the Jenkins update center. It accepts `plugins`
+(comma-separated short names) and version depth. With no selector it walks every
+plugin in `update-center.actual.json` (about 2,100), which is two requests in total:
+the 3.5 MB current-release document and, for any depth above 1, the 24 MB
+`plugin-versions.json`. Depth 1 skips the larger document. The current release is
+emitted first, then older versions newest release first; date depth uses the
+version's release time. Plugins the update center does not list (suspended, removed
+or hosted elsewhere) are not included. Both documents' signatures are verified
+against the Jenkins update center roots embedded in the plugin before any of the
+content is used, so a tampered or stale mirror copy fails the listing.
+
+Discovery pins the download URL and SHA-256 for every version, and the size for each
+plugin's current release only, since older versions have none. Downloads redirect to
+`get.jenkins.io` and a mirror, so only the `updates.jenkins.io` URL is pinned and the
+host verifies the digest. Archives are `.hpi` files, stored intact. The update center
+publishes install counts (`installs`), release times, a declared source repository,
+labels as tags, and in metadata a health score, the minimum Jenkins core, deprecation,
+and `security_warnings` (the IDs of Jenkins security advisories that match the
+version; absent when none match, and filterable as `metadata:security_warnings`); it publishes
+no download counts or ratings. See the [Jenkins module](../sources/jenkins/README.md).
+
 ## n8n community nodes
 
 ```sh

@@ -19,6 +19,7 @@ host owns storage, ordering, resume, and S3 credentials. See
 | [helm](helm/) | `helm` | beta | `127.0.0.1:7789` | Yes, Artifact Hub versions | Charts from Artifact Hub's helm repositories; per-repo download host rule; SHA-256 pinned per version, no size; stars; OCI-hosted charts skipped |
 | [joomla](joomla/) | `joomla` | beta | `127.0.0.1:7790` | Yes, update-manifest releases | Install from Web extensions whose install URL is an HTTPS update manifest (about 90 of 3,900); every release pinned with the manifest's SHA-256, SHA-384 or SHA-512; ratings, license; per-manifest download host rule |
 | [oci](oci/) | `oci` | experimental | `127.0.0.1:7791` | Yes, tags | Docker Hub and Quay enumerated through their catalog APIs, GHCR and ECR Public by `repos`; tag pinned to its manifest digest; manifest, config and layers per selected platform; client in `sdk/services/oci` |
+| [jenkins](jenkins/) | `jenkins` | beta | `127.0.0.1:7792` | Yes, update center versions | Update center plugins (`.hpi`); two static documents walk the whole catalog; SHA-256 pinned per version, size for current releases only; installs, health score, declared repository |
 
 Run one locally with `just plugin <name> --listen 127.0.0.1:PORT`.
 
@@ -168,8 +169,16 @@ API facts below were checked on 2026-11-06.
 
 ### Medium priority
 
-- [ ] **Jenkins plugins**. `update-center.json` lists every plugin with URL and
-  SHA-256; `plugin-versions.json` gives history. Runs on CI controllers.
+- [x] **Jenkins plugins**. Implemented as `jenkins` over
+  `updates.jenkins.io/current/` (checked 2026-11-11: 2,131 plugins, 38,234
+  versions). `update-center.actual.json` (3.5 MB) holds the current release of
+  every plugin with SHA-256, size, install count and health; `plugin-versions.json`
+  (24 MB) holds every version with SHA-256 but no size. Digests are base64.
+  Downloads redirect to `get.jenkins.io` and then a mirror; only the stable
+  `updates.jenkins.io` URL is pinned. The signed update center also lists
+  security `warnings` and `deprecations`, which are read into `security_warnings` and `deprecated` metadata. Both documents'
+  signatures are verified (SHA-512 and RSA, chaining to the two update center
+  roots embedded from Jenkins core) before anything is read.
 - [ ] **PowerShell Gallery**. NuGet v2 feed of `.nupkg` modules with install-time
   scripts; history of typosquatting.
 - [x] **Ansible Galaxy collections**. API v3 with tarballs, SHA-256, and version

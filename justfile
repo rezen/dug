@@ -59,9 +59,9 @@ web *args:
 local *args:
     go run ./cmd/dug local "$@"
 
-# Run one registry plugin in the foreground: wordpress, wordpress-themes, chrome, firefox, github, n8n, ansible-galaxy, obsidian, helm, joomla, or oci.
+# Run one registry plugin in the foreground: wordpress, wordpress-themes, chrome, firefox, github, n8n, ansible-galaxy, obsidian, helm, joomla, oci, or jenkins.
 plugin source *args:
-    @case "$1" in wordpress|wordpress-themes) module=wordpress ;; chrome|firefox|github|n8n|ansible-galaxy|obsidian|helm|joomla|oci) module="$1" ;; *) echo "Unknown source: $1" >&2; exit 2;; esac; source_name="$1"; shift; exec go run "./sources/$module/cmd/dug-$source_name" "$@"
+    @case "$1" in wordpress|wordpress-themes) module=wordpress ;; chrome|firefox|github|n8n|ansible-galaxy|obsidian|helm|joomla|oci|jenkins) module="$1" ;; *) echo "Unknown source: $1" >&2; exit 2;; esac; source_name="$1"; shift; exec go run "./sources/$module/cmd/dug-$source_name" "$@"
 
 # One command: start the source's plugin and local rclone S3 server, list it, stop the plugin. Extra args are host flags, e.g. --limit 20 --option namespaces=community.
 list source *args:
@@ -87,6 +87,8 @@ _with-plugin command source *args:
         obsidian) module=obsidian port=7788 ;;
         helm) module=helm port=7789 ;;
         joomla) module=joomla port=7790 ;;
+        oci) module=oci port=7791 ;;
+        jenkins) module=jenkins port=7792 ;;
         *) echo "Unknown source: $1" >&2; exit 2 ;;
     esac
     source_name="$1"; shift
@@ -125,3 +127,7 @@ e2e-wordpress-themes:
 # Live Firefox version downloads, S3 integrity checks, and resume verification.
 e2e-firefox:
     bash scripts/e2e-firefox.sh
+
+# Live Jenkins plugin version downloads, S3 integrity checks, and resume verification.
+e2e-jenkins:
+    bash scripts/e2e-jenkins.sh

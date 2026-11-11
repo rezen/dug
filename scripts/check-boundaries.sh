@@ -6,7 +6,7 @@ repo_root=$(pwd)
 check_dir=$(mktemp -d)
 trap 'rm -rf "$check_dir"' EXIT
 export GOWORK=off
-for module in . sdk sources/wordpress sources/chrome sources/firefox sources/github sources/n8n sources/ansible-galaxy sources/obsidian sources/helm sources/joomla sources/oci; do
+for module in . sdk sources/wordpress sources/chrome sources/firefox sources/github sources/n8n sources/ansible-galaxy sources/obsidian sources/helm sources/joomla sources/oci sources/jenkins; do
   module_dir="$repo_root/$module"
   cp "$module_dir/go.mod" "$check_dir/check.mod"
   cp "$module_dir/go.sum" "$check_dir/check.sum"

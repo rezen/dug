@@ -152,6 +152,10 @@ OCI registries: dug-oci (use --plugin-url http://127.0.0.1:7791)
   --option platform=all
   --option max_layer_size=104857600
 
+Jenkins: dug-jenkins (use --plugin-url http://127.0.0.1:7792)
+  --option plugins=git,workflow-cps
+  --option version_depth=3
+
 Run a command with --help for transfer and storage options.
 `
 

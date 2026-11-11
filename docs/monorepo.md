@@ -18,6 +18,7 @@ to separate repositories. The host has no compile-time adapter dependency.
 | `sources/helm/` | Helm charts adapter, tests, `cmd/dug-helm` | SDK |
 | `sources/joomla/` | Joomla adapter, tests, `cmd/dug-joomla` | SDK |
 | `sources/oci/` | OCI registries adapter, tests, `cmd/dug-oci` | SDK |
+| `sources/jenkins/` | Jenkins adapter, tests, `cmd/dug-jenkins` | SDK |
 | `integration/` | Tests combining host, SDK and adapters; the GoFakeS3 test server `cmd/dug-s3local` | Host, SDK, sources under test, GoFakeS3 |
 
 ```mermaid
@@ -33,6 +34,7 @@ flowchart LR
     Helmcharts[Helm charts module] --> SDK
     Joomla[Joomla module] --> SDK
     OCIregistries[OCI registries module] --> SDK
+    Jenkins[Jenkins module] --> SDK
     Host <-. Connect protocol .-> WP
     Host <-. Connect protocol .-> Chrome
     Host <-. Connect protocol .-> Firefox
@@ -43,6 +45,7 @@ flowchart LR
     Host <-. Connect protocol .-> Helmcharts
     Host <-. Connect protocol .-> Joomla
     Host <-. Connect protocol .-> OCIregistries
+    Host <-. Connect protocol .-> Jenkins
 ```
 
 Each source has its own `go.mod`, `go.sum`, executable and adapter tests. It must
@@ -72,6 +75,7 @@ has a stable global `ID` and a provider-local `Kind`:
 | `ansible-galaxy` | `collections` | `ansible-galaxy` |
 | `helm` | `packages` | `helm` |
 | `oci` | `images` | `oci` |
+| `jenkins` | `plugins` | `jenkins` |
 
 Both WordPress commands use `wordpress.Provider()`, derived from the adapter's
 directory definitions. The command validates membership before startup. Each
@@ -152,7 +156,7 @@ replacements or pretending the SDK has already been published.
 
 While these modules share a repository, Go submodule tags include their directory:
 `sdk/v0.1.0`, `sources/wordpress/v0.1.0`, `sources/chrome/v0.1.0`,
-`sources/firefox/v0.1.0`, `sources/github/v0.1.0`, `sources/n8n/v0.1.0`, `sources/ansible-galaxy/v0.1.0`, `sources/obsidian/v0.1.0`, `sources/helm/v0.1.0`, and `sources/oci/v0.1.0`. A root host release uses `v0.1.0`. These are naming
+`sources/firefox/v0.1.0`, `sources/github/v0.1.0`, `sources/n8n/v0.1.0`, `sources/ansible-galaxy/v0.1.0`, `sources/obsidian/v0.1.0`, `sources/helm/v0.1.0`, `sources/jenkins/v0.1.0`, and `sources/oci/v0.1.0`. A root host release uses `v0.1.0`. These are naming
 examples, not tags that this task created.
 
 1. Publish an SDK version, then pin each host/source dependency to that version.

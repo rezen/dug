@@ -26,7 +26,7 @@ just dug download wordpress --inventory INVENTORY_KEY \
   --where 'downloads > 20 AND updated >= 2025-01-01' --limit 100
 ```
 
-`just e2e-wordpress`, `just e2e-wordpress-themes`, and `just e2e-firefox` are explicit
+`just e2e-wordpress`, `just e2e-wordpress-themes`, `just e2e-firefox`, and `just e2e-jenkins` are explicit
 live-network jobs; they are not part of `just check`. CI uses `just check` and `just build`.
 
 `just check` visits every module; root `go test ./...` covers only the host.

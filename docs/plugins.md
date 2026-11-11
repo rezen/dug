@@ -2,7 +2,7 @@
 
 Registry implementations run as independent HTTP services using
 [Connect-Go](https://github.com/connectrpc/connect-go). WordPress plugins and themes, Chrome Web Store,
-Firefox, GitHub, n8n community nodes, Ansible Galaxy, Obsidian community plugins, Helm charts, and OCI registries (Docker Hub, Quay, GHCR, ECR Public) are shipped here as independent Go modules. See [workspace boundaries](monorepo.md). The host accepts other implementations of the same protocol
+Firefox, GitHub, n8n community nodes, Ansible Galaxy, Obsidian community plugins, Helm charts, Jenkins plugins, and OCI registries (Docker Hub, Quay, GHCR, ECR Public) are shipped here as independent Go modules. See [workspace boundaries](monorepo.md). The host accepts other implementations of the same protocol
 without importing their code or adding registry-specific flags.
 
 ```mermaid
@@ -128,6 +128,20 @@ resolution makes no request and rejects any URL that is not that tarball route o
 `registry.npmjs.org`. npm publishes no SHA-256 or size, so the blob carries
 neither: the plugin checks the SHA-512 while the tarball streams, and the host
 computes SHA-256.
+
+Jenkins accepts:
+
+| Option | Meaning |
+| --- | --- |
+| `plugins` | Comma-separated plugin short names (`git`, `workflow-cps`); each must be in the update center |
+| `version_depth` | Positive integer, inclusive YYYY-MM-DD cutoff, or unlimited; default 1 |
+
+With no `plugins`, discovery walks every plugin in the update center. Jenkins needs
+no credentials. Discovery pins the download URL and SHA-256 (the update center
+publishes it base64-encoded; the plugin stores `sha256:<hex>`), and the size for
+each plugin's current release only. Both update center documents are signature
+verified before use (see the module README). Resolution makes no request and rejects any URL
+that is not a `.hpi` under `/download/plugins/NAME/` on `updates.jenkins.io`.
 
 Ansible Galaxy accepts:
 
@@ -286,7 +300,7 @@ share the SDK but do not import each other.
 
 WordPress plugins bind to `127.0.0.1:7781`, Chrome to `127.0.0.1:7782`, Firefox to `127.0.0.1:7783`, GitHub to
 `127.0.0.1:7784`, WordPress themes to `127.0.0.1:7785`, n8n to `127.0.0.1:7786`, Ansible Galaxy to
-`127.0.0.1:7787`, Obsidian to `127.0.0.1:7788`, Helm to `127.0.0.1:7789`, and OCI registries to `127.0.0.1:7791` by default. Set the same
+`127.0.0.1:7787`, Obsidian to `127.0.0.1:7788`, Helm to `127.0.0.1:7789`, Jenkins to `127.0.0.1:7792`, and OCI registries to `127.0.0.1:7791` by default. Set the same
 `DUG_PLUGIN_TOKEN` on the host and plugin to enable bearer authentication; the host only sends it to
 `https://` or loopback plugin URLs. For a remote deployment, terminate TLS at a proxy and allow long-lived streaming
 responses without response buffering. The supplied server uses HTTP/1.1 Connect;
@@ -414,6 +428,17 @@ published that version (username and email). Metadata keeps `version_rank`,
 `release_date_source`, `license`, and, only when true, `install_script` (a
 preinstall, install or postinstall script), `deprecated` and `provenance` (a build
 attestation). npm publishes no ratings or install base.
+
+Jenkins accepts `plugins` and `version_depth`. It supplies SHA-256 for every version
+and size for current releases. Its facts are `Installs` (the install count Jenkins
+controllers report), `UpdatedAt` (the current release time, repeated on every
+version), `ReleasedAt` (the version's own release time) and a declared `Repository`
+taken from the plugin's `scm` link. Tags are the plugin's labels and the author is
+its first listed developer. Metadata keeps `security_warnings` (advisory IDs whose
+version pattern matches that version, absent when none), `deprecated` and
+`deprecation_url`, `health_score` (0–100), `required_core`, `version_rank` and
+`release_date_source`. The update center publishes no download
+counts or ratings, so `Downloads` stays nil; order by `installs` or `popular`.
 
 Ansible Galaxy accepts `collections`, `namespaces`, `page_size` (1–100), and
 `version_depth`. It supplies SHA-256, size and version creation dates. Its facts
