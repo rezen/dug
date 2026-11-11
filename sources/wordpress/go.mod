@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.8
 
 require (
-	connectrpc.com/connect v1.21.0 // indirect
+	connectrpc.com/connect v1.21.1 // indirect
 	github.com/hashicorp/go-version v1.8.0
 	golang.org/x/sync v0.23.0
 	google.golang.org/protobuf v1.36.12 // indirect
